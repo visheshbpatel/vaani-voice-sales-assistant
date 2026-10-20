@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -6,6 +7,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from app.services.gemini_live import run_live_bridge
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _lock = asyncio.Lock()
 _busy = False
@@ -50,7 +52,7 @@ async def voice_socket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     except Exception:
-        pass
+        logger.exception("Voice WebSocket bridge failed")
     finally:
         await release_call()
         await _close_quietly(websocket)

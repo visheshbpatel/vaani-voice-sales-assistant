@@ -38,6 +38,52 @@ h1 {
   color: #b91c1c;
 }
 
+.duration {
+  color: #57534e;
+}
+
+section {
+  margin: 1.25rem 0;
+}
+
+h2 {
+  font-size: 1.1rem;
+}
+
+.transcript {
+  max-height: 20rem;
+  overflow-y: auto;
+  padding: 0.75rem;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+  background: #fafaf9;
+}
+
+.transcript-empty {
+  color: #78716c;
+}
+
+.transcript-note {
+  margin: 0.5rem 0 0;
+  color: #78716c;
+  font-size: 0.85rem;
+}
+
+.transcript-message {
+  margin: 0 0 0.75rem;
+}
+
+.transcript-message:last-child {
+  margin-bottom: 0;
+}
+
+.transcript-speaker {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #57534e;
+}
+
 .actions {
   display: flex;
   gap: 0.75rem;

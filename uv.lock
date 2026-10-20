@@ -610,6 +610,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "google-genai" },
     { name = "pydantic-settings" },
+    { name = "pytest" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -626,6 +627,7 @@ requires-dist = [
     { name = "google-genai", specifier = "==1.75.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = "==0.28.1" },
     { name = "pydantic-settings", specifier = "==2.16.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.5" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==0.25.3" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.54.0" },
