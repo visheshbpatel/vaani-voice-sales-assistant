@@ -9,7 +9,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketDisconnected, Web
 
 from app.database import SessionLocal
 from app.models.call import Call
-from app.routes.calls import create_call, finalize_call
+from app.routes.calls import create_call, finalize_call, generate_call_summary
 from app.services.gemini_live import run_live_bridge
 
 router = APIRouter()
@@ -32,6 +32,7 @@ def _merge_transcript_text(previous: str, fragment: str) -> str:
 
 _lock = asyncio.Lock()
 _busy = False
+_summary_tasks: set[asyncio.Task[None]] = set()
 
 
 async def try_acquire_call() -> bool:
@@ -52,6 +53,34 @@ async def release_call() -> None:
 def reset_call_gate() -> None:
     global _busy
     _busy = False
+
+
+async def _generate_summary_in_background(call_id: int) -> None:
+    def generate() -> None:
+        with SessionLocal() as db:
+            call = db.get(Call, call_id)
+            if call is not None:
+                generate_call_summary(db, call)
+
+    try:
+        await asyncio.to_thread(generate)
+    except Exception:
+        logger.exception("Could not generate call summary.")
+
+
+def _retain_summary_task(task: asyncio.Task[None]) -> None:
+    _summary_tasks.add(task)
+    task.add_done_callback(_summary_tasks.discard)
+
+
+def _create_call() -> Call:
+    with SessionLocal() as db:
+        return create_call(db)
+
+
+def _finalize_call(call_id: int, transcript: list[dict[str, Any]]) -> None:
+    with SessionLocal() as db:
+        finalize_call(db, call_id, transcript)
 
 
 async def _close_quietly(websocket: WebSocket, code: int = 1000) -> None:
@@ -80,13 +109,10 @@ async def voice_socket(websocket: WebSocket) -> None:
         )
         await _close_quietly(websocket, code=1008)
         return
-    db = SessionLocal()
     call_id: int | None = None
-    started_at = datetime.now(timezone.utc)
     transcript: list[dict[str, Any]] = []
     active_entry: dict[str, Any] | None = None
     persistence_error: str | None = None
-    client_lead_details: dict[str, str] = {}
 
     def collect_transcript(speaker: str, text: str, finished: bool) -> None:
         nonlocal active_entry
@@ -104,45 +130,34 @@ async def voice_socket(websocket: WebSocket) -> None:
         if finished:
             active_entry = None
 
-    def record_consent(value: bool) -> None:
+    async def record_consent(value: bool) -> None:
         nonlocal persistence_error
         if call_id is None:
             return
-        call = db.get(Call, call_id)
-        if call:
-            try:
+        def save() -> None:
+            with SessionLocal() as db:
+                call = db.get(Call, call_id)
+                if call is None:
+                    return
                 call.recording_consent = value
                 db.commit()
-            except SQLAlchemyError:
-                db.rollback()
-                persistence_error = (
-                    "Recording consent could not be saved; the recording will not be stored."
-                )
-                logger.exception("Could not save recording consent.")
-
-    def record_lead_details(value: Any) -> None:
-        if not isinstance(value, dict):
-            return
-        for key, limit in (
-            ("name", 120),
-            ("company", 160),
-            ("contact", 254),
-            ("preferred_time", 120),
-        ):
-            item = value.get(key)
-            if isinstance(item, str) and item.strip():
-                client_lead_details[key] = item.strip()[:limit]
+        try:
+            await asyncio.to_thread(save)
+        except SQLAlchemyError:
+            persistence_error = (
+                "Recording consent could not be saved; the recording will not be stored."
+            )
+            logger.exception("Could not save recording consent.")
 
     try:
         await websocket.send_json({"type": "status", "value": "connecting"})
         try:
-            call = create_call(db)
+            call = await asyncio.to_thread(_create_call)
             call_id = call.id
             await _send_quietly(
                 websocket, {"type": "call_started", "call_id": call_id}
             )
         except SQLAlchemyError:
-            db.rollback()
             logger.exception("Could not create call history record.")
             persistence_error = (
                 "Call history is unavailable; the call can continue without saving."
@@ -152,38 +167,35 @@ async def voice_socket(websocket: WebSocket) -> None:
             collect_transcript,
             send_connecting=False,
             on_recording_consent=record_consent,
-            on_lead_details=record_lead_details,
         )
     except WebSocketDisconnect:
         pass
     except Exception:
         logger.exception("Voice WebSocket bridge failed")
     finally:
-        if call_id is not None:
-            try:
-                finalize_call(
-                    db,
-                    call_id,
-                    transcript,
-                    started_at,
-                    client_lead_details or None,
-                )
-            except SQLAlchemyError:
-                db.rollback()
-                logger.exception("Could not finalize call history record.")
+        try:
+            if call_id is not None:
+                try:
+                    await asyncio.to_thread(_finalize_call, call_id, transcript)
+                except SQLAlchemyError:
+                    logger.exception("Could not finalize call history record.")
+                    await _send_quietly(
+                        websocket,
+                        {
+                            "type": "error",
+                            "message": "The call ended, but its history could not be saved.",
+                            "fatal": False,
+                        },
+                    )
+            if persistence_error:
                 await _send_quietly(
                     websocket,
-                    {
-                        "type": "error",
-                        "message": "The call ended, but its history could not be saved.",
-                        "fatal": False,
-                    },
+                    {"type": "error", "message": persistence_error, "fatal": False},
                 )
-        if persistence_error and websocket.client_state == WebSocketState.CONNECTED:
-            await _send_quietly(
-                websocket,
-                {"type": "error", "message": persistence_error, "fatal": False}
-            )
-        db.close()
-        await release_call()
-        await _close_quietly(websocket)
+        finally:
+            await release_call()
+            await _close_quietly(websocket)
+            if call_id is not None:
+                _retain_summary_task(
+                    asyncio.create_task(_generate_summary_in_background(call_id))
+                )

@@ -3,8 +3,7 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
-from app.config import settings
-from app.database import Base
+from app.database import Base, DATABASE_URL
 from app.models import Call
 
 # this is the Alembic Config object, which provides
@@ -40,10 +39,8 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = settings.DATABASE_URL or "sqlite:///./vaani.db"
-    url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     context.configure(
-        url=url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -61,10 +58,7 @@ def run_migrations_online() -> None:
 
     """
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL or "sqlite:///./vaani.db"
-    configuration["sqlalchemy.url"] = configuration["sqlalchemy.url"].replace(
-        "postgresql://", "postgresql+psycopg://", 1
-    )
+    configuration["sqlalchemy.url"] = DATABASE_URL
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

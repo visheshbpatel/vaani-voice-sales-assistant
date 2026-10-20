@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.config import settings
 from app.models.call import CallStatus
 
-SUMMARY_MODEL = "gemini-2.5-flash"
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +24,10 @@ class CallSummary(BaseModel):
     interest_evidence: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
+    lead_name: str = ""
+    lead_company: str = ""
+    lead_contact: str = ""
+    lead_preferred_time: str = ""
     status: CallStatus
 
 
@@ -77,13 +80,22 @@ def generate_summary(transcript: list[dict[str, Any]]) -> CallSummary:
     prompt = (
         "Summarize this sales conversation. Use only information explicitly present; "
         "put missing information in unknowns and do not invent Surefy facts. "
-        "Choose the most conservative applicable status.\n\n"
+        "Use these status definitions: Converted means there is real evidence of a completed "
+        "conversion; Interested means the customer expressed interest without requesting a demo; "
+        "Follow-up Required means more contact is needed; Not Interested means the customer "
+        "declined; Demo Requested means the customer explicitly requested a demo; No Response "
+        "means no customer speech was captured. choose the most conservative status. "
+        "Include lead_name, lead_company, lead_contact, and lead_preferred_time only when the "
+        "customer explicitly said them; otherwise use an empty string.\n\n"
         f"Transcript:\n{conversation}"
     )
     try:
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        client = genai.Client(
+            api_key=settings.GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=30),
+        )
         response = client.models.generate_content(
-            model=SUMMARY_MODEL,
+            model=settings.SUMMARY_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

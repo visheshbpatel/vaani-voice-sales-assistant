@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import time
@@ -85,7 +86,9 @@ async def _browser_to_gemini(
                 if payload.get("type") == "end":
                     return "client_disconnect"
                 if payload.get("type") == "recording_consent" and on_recording_consent:
-                    on_recording_consent(bool(payload.get("value")))
+                    result = on_recording_consent(bool(payload.get("value")))
+                    if inspect.isawaitable(result):
+                        await result
                 if payload.get("type") == "lead_details" and on_lead_details:
                     on_lead_details(payload.get("value"))
                 if payload.get("type") == "playback_idle":

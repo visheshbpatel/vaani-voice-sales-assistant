@@ -1,4 +1,5 @@
 import enum
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -67,3 +68,11 @@ class Call(Base):
     lead_contact: Mapped[str | None] = mapped_column(String(254))
     lead_preferred_time: Mapped[str | None] = mapped_column(String(120))
     lead_contact_consent: Mapped[bool | None] = mapped_column(Boolean)
+
+    @property
+    def has_recording(self) -> bool:
+        return bool(self.recording_object_key)
+
+    @property
+    def summary_data(self) -> dict[str, Any] | None:
+        return json.loads(self.summary) if self.summary else None

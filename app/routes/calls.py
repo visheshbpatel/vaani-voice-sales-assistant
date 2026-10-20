@@ -2,7 +2,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pathlib import Path
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.call import Call, CallStatus, SummaryGenerationStatus
-from app.schemas.call import CallHistory, LeadUpdate
+from app.schemas.call import CallHistory, CallListItem, LeadUpdate
 from app.services.recording_storage import save_recording, signed_recording_url
 from app.config import settings
 from app.services.call_summary import (
@@ -94,10 +94,15 @@ def _extract_lead_details(
     return details
 
 
-@router.get("", response_model=list[CallHistory])
-def list_calls(db: Session = Depends(get_db)) -> list[Call]:
+@router.get("", response_model=list[CallListItem])
+def list_calls(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[Call]:
     try:
-        return list(db.scalars(select(Call).order_by(Call.created_at.desc())).all())
+        return list(
+            db.scalars(select(Call).order_by(Call.started_at.desc()).limit(limit)).all()
+        )
     except SQLAlchemyError:
         logger.exception("Could not retrieve call history.")
         raise HTTPException(status_code=503, detail="Call history is temporarily unavailable.")
@@ -140,7 +145,7 @@ def generate_call_summary(db: Session, call: Call) -> Call:
         summary = generate_summary(call.transcript)
     except SummaryGenerationError:
         call.summary_generation_status = SummaryGenerationStatus.FAILED
-        call.status = CallStatus.FOLLOW_UP_REQUIRED
+        call.status = None
         call.summary = None
     else:
         call.summary = summary_json(summary)
@@ -159,6 +164,8 @@ def retry_summary(call_id: int, db: Session = Depends(get_db)) -> Call:
     call = db.get(Call, call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")
+    if call.ended_at is None:
+        raise HTTPException(status_code=409, detail="Call has not ended.")
     if call.summary_generation_status == SummaryGenerationStatus.COMPLETED:
         return call
     try:
@@ -228,23 +235,17 @@ def finalize_call(
     db: Session,
     call_id: int,
     transcript: list[dict[str, str]],
-    started_at: datetime,
+    started_at: datetime | None = None,
     lead_details: dict[str, str] | None = None,
 ) -> None:
     call = db.get(Call, call_id)
     if call is None:
         return
     ended_at = datetime.now(timezone.utc)
+    stored_started_at = call.started_at
+    if stored_started_at.tzinfo is None:
+        stored_started_at = stored_started_at.replace(tzinfo=timezone.utc)
     call.ended_at = ended_at
-    call.duration_seconds = max(0, (ended_at - started_at).total_seconds())
+    call.duration_seconds = max(0, (ended_at - stored_started_at).total_seconds())
     call.transcript = transcript
-    lead = _extract_lead_details(transcript)
-    if lead_details:
-        lead.update({key: value for key, value in lead_details.items() if value})
-    if any(lead.values()):
-        call.lead_name = lead["name"]
-        call.lead_company = lead["company"]
-        call.lead_contact = lead["contact"]
-        call.lead_preferred_time = lead["preferred_time"]
-        call.lead_contact_consent = True
-    generate_call_summary(db, call)
+    db.commit()

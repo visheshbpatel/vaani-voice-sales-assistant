@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from app.main import app
 from app.models.call import CallStatus, SummaryGenerationStatus
-from app.routes.calls import create_call, generate_call_summary
+from app.routes.calls import create_call, finalize_call, generate_call_summary
 from app.services import call_summary
 
 
@@ -58,12 +58,13 @@ def test_generation_failure_marks_record_failed(db_session, monkeypatch):
     generate_call_summary(db_session, call)
 
     assert call.summary_generation_status is SummaryGenerationStatus.FAILED
-    assert call.status is CallStatus.FOLLOW_UP_REQUIRED
+    assert call.status is None
 
 
 def test_retry_updates_same_record(db_session, monkeypatch):
     call = create_call(db_session)
     call.transcript = [{"speaker": "customer", "text": "We need Reachout"}]
+    finalize_call(db_session, call.id, call.transcript)
     call.summary_generation_status = SummaryGenerationStatus.FAILED
     db_session.commit()
     monkeypatch.setattr(

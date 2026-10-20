@@ -1,3 +1,3 @@
-from app.schemas.call import CallHistory, LeadUpdate
+from app.schemas.call import CallHistory, CallListItem, LeadUpdate
 
-__all__ = ["CallHistory", "LeadUpdate"]
+__all__ = ["CallHistory", "CallListItem", "LeadUpdate"]

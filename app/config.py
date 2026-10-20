@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     GEMINI_API_KEY: str = ""
+    SUMMARY_MODEL: str = "gemini-3.8-flash"
     DATABASE_URL: str = "sqlite:///./vaani.db"
     R2_ACCOUNT_ID: str = ""
     R2_ACCESS_KEY_ID: str = ""

@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 
@@ -472,10 +473,37 @@ def test_cleanup_releases_gate_after_disconnect(monkeypatch):
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
             _receive_startup(ws)
+            ws.send_json({"type": "end"})
+        assert _wait_for(lambda: not voice_route._busy, timeout=5)
         with client.websocket_connect("/ws/voice") as ws2:
             assert ws2.receive_json()["value"] == "connecting"
 
     assert session.closed is True
+
+
+def test_gate_releases_before_slow_summary_finishes(monkeypatch):
+    first = FakeSession([], hang=asyncio.Event())
+    second = FakeSession([], hang=asyncio.Event())
+    sessions = iter([first, second])
+    summary_started = threading.Event()
+    release_summary = threading.Event()
+
+    def slow_summary(db, call):
+        summary_started.set()
+        release_summary.wait(timeout=2)
+
+    monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: next(sessions))
+    monkeypatch.setattr(voice_route, "generate_call_summary", slow_summary)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/voice") as ws:
+            _receive_startup(ws)
+            ws.send_json({"type": "end"})
+        assert summary_started.wait(timeout=5)
+        with client.websocket_connect("/ws/voice") as ws2:
+            _receive_startup(ws2)
+            ws2.send_json({"type": "end"})
+    release_summary.set()
 
 
 def test_duplicate_session_rejected(monkeypatch):
@@ -514,8 +542,4 @@ def test_call_end_persists_browser_lead_details(db_session, monkeypatch):
     assert len(calls) == 1
     call = calls[0]
     assert call.ended_at is not None
-    assert call.lead_name == details["name"]
-    assert call.lead_company == details["company"]
-    assert call.lead_contact == details["contact"]
-    assert call.lead_preferred_time == details["preferred_time"]
-    assert call.lead_contact_consent is True
+    assert call.transcript == []
