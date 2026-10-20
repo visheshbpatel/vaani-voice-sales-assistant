@@ -18,11 +18,21 @@ let activeSources = [];
 let playGeneration = 0;
 let starting = false;
 let transcriptEntries = new Map();
-let lastFinalText = new Map();
+let activeTranscriptEntry = null;
+let activeTranscriptSpeaker = null;
 let shouldAutoScroll = true;
+let assistantAudioPending = false;
 
 function setStatus(value) {
   statusEl.textContent = value;
+}
+
+function finalizeTranscriptMessage() {
+  if (activeTranscriptEntry) {
+    activeTranscriptEntry.dataset.partial = "false";
+  }
+  activeTranscriptEntry = null;
+  activeTranscriptSpeaker = null;
 }
 
 function setError(message) {
@@ -47,7 +57,8 @@ function setDuration(seconds) {
 
 function clearTranscript() {
   transcriptEntries = new Map();
-  lastFinalText = new Map();
+  activeTranscriptEntry = null;
+  activeTranscriptSpeaker = null;
   transcriptEl.innerHTML = "";
   const empty = document.createElement("p");
   empty.className = "transcript-empty";
@@ -79,12 +90,13 @@ function addTranscriptMessage(speaker, text, partial) {
   if (!text) {
     return;
   }
-  const existing = transcriptEntries.get(speaker);
-  if (!partial && !existing && lastFinalText.get(speaker) === text) {
-    return;
+  if (activeTranscriptSpeaker !== speaker) {
+    finalizeTranscriptMessage();
+    activeTranscriptSpeaker = speaker;
+    activeTranscriptEntry = null;
   }
-  const message = existing || document.createElement("p");
-  if (!existing) {
+  const message = activeTranscriptEntry || document.createElement("p");
+  if (!activeTranscriptEntry) {
     message.className = "transcript-message";
     const label = document.createElement("span");
     label.className = "transcript-speaker";
@@ -93,7 +105,7 @@ function addTranscriptMessage(speaker, text, partial) {
     message.appendChild(document.createTextNode(""));
     transcriptEl.querySelector(".transcript-empty")?.remove();
     transcriptEl.appendChild(message);
-    transcriptEntries.set(speaker, message);
+    activeTranscriptEntry = message;
   }
   message.lastChild.textContent = mergeTranscriptText(
     message.lastChild.textContent,
@@ -101,8 +113,7 @@ function addTranscriptMessage(speaker, text, partial) {
   );
   message.dataset.partial = String(partial);
   if (!partial) {
-    transcriptEntries.delete(speaker);
-    lastFinalText.set(speaker, text);
+    finalizeTranscriptMessage();
   }
   if (shouldAutoScroll) {
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -168,6 +179,12 @@ function enqueuePcm16(pcmBuffer) {
   const startAt = Math.max(playbackCtx.currentTime, nextPlayTime);
   source.onended = () => {
     activeSources = activeSources.filter((item) => item !== source);
+    if (!activeSources.length && assistantAudioPending) {
+      assistantAudioPending = false;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "playback_idle" }));
+      }
+    }
   };
   try {
     source.start(startAt);
@@ -238,6 +255,7 @@ function endCall() {
 
 function handleSocketMessage(event) {
   if (typeof event.data !== "string") {
+    assistantAudioPending = true;
     enqueuePcm16(event.data);
     return;
   }
@@ -249,6 +267,12 @@ function handleSocketMessage(event) {
   }
   if (payload.type === "status" && payload.value) {
     setStatus(payload.value);
+    if (payload.value === "listening") {
+      finalizeTranscriptMessage();
+      if (!assistantAudioPending && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "playback_idle" }));
+      }
+    }
     return;
   }
   if (payload.type === "duration" && Number.isFinite(payload.seconds)) {
@@ -265,6 +289,11 @@ function handleSocketMessage(event) {
   }
   if (payload.type === "interrupted") {
     stopPlayback();
+    assistantAudioPending = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "playback_idle" }));
+    }
+    finalizeTranscriptMessage();
     setStatus("listening");
     return;
   }

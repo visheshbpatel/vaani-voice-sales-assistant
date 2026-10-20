@@ -149,9 +149,9 @@ def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
         assert config["realtime_input_config"] == {
             "automatic_activity_detection": {
                 "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
-                "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
+                "end_of_speech_sensitivity": "END_SENSITIVITY_HIGH",
                 "prefix_padding_ms": 300,
-                "silence_duration_ms": 1200,
+                "silence_duration_ms": 700,
             }
         }
         return session
@@ -269,9 +269,11 @@ def test_idle_nudge_fires_twice_without_transcript():
         stop = asyncio.Event()
         state = {"count": 0}
         for _ in range(3):
+            playback = asyncio.Event()
+            playback.set()
             task = asyncio.create_task(
                 gemini_live._idle_nudge_loop(
-                    session, stop, asyncio.Event(), state
+                    session, stop, playback, asyncio.Event(), state, lambda: False
                 )
             )
             await task
@@ -303,7 +305,12 @@ def test_idle_nudge_is_cancelled_by_speech_and_end():
                 caller.set()
             task = asyncio.create_task(
                 gemini_live._idle_nudge_loop(
-                    FakeNudgeSession(), stop, caller, {"count": 0}
+                    FakeNudgeSession(),
+                    stop,
+                    asyncio.Event(),
+                    caller,
+                    {"count": 0},
+                    lambda: False,
                 )
             )
             await asyncio.sleep(0.01)
@@ -313,6 +320,68 @@ def test_idle_nudge_is_cancelled_by_speech_and_end():
     gemini_live.IDLE_NUDGE_SECONDS = 0.001
     try:
         asyncio.run(scenario())
+    finally:
+        gemini_live.IDLE_NUDGE_SECONDS = original
+
+
+def test_idle_nudge_waits_for_playback_and_closing_text_disables_it():
+    class FakeNudgeSession:
+        def __init__(self):
+            self.sent = []
+
+        async def send_realtime_input(self, **kwargs):
+            self.sent.append(kwargs)
+
+    async def scenario():
+        session = FakeNudgeSession()
+        stop = asyncio.Event()
+        playback = asyncio.Event()
+        task = asyncio.create_task(
+            gemini_live._idle_nudge_loop(
+                session,
+                stop,
+                playback,
+                asyncio.Event(),
+                {"count": 0},
+                lambda: False,
+            )
+        )
+        await asyncio.sleep(0.01)
+        assert session.sent == []
+        playback.set()
+        await task
+        assert session.sent == [{"text": IDLE_NUDGE_TRIGGER}]
+
+    original = gemini_live.IDLE_NUDGE_SECONDS
+    gemini_live.IDLE_NUDGE_SECONDS = 0.001
+    try:
+        asyncio.run(scenario())
+    finally:
+        gemini_live.IDLE_NUDGE_SECONDS = original
+    assert gemini_live._is_closing_text("Thank you, goodbye. You can end the call.")
+    assert not gemini_live._is_closing_text("What does your business do?")
+
+    async def no_goodbye_nudge():
+        session = type(
+            "Session",
+            (),
+            {"send_realtime_input": lambda self, **kwargs: None},
+        )()
+        playback = asyncio.Event()
+        playback.set()
+        await gemini_live._idle_nudge_loop(
+            session,
+            asyncio.Event(),
+            playback,
+            asyncio.Event(),
+            {"count": 0},
+            lambda: True,
+        )
+
+    original = gemini_live.IDLE_NUDGE_SECONDS
+    gemini_live.IDLE_NUDGE_SECONDS = 0.001
+    try:
+        asyncio.run(no_goodbye_nudge())
     finally:
         gemini_live.IDLE_NUDGE_SECONDS = original
 

@@ -20,7 +20,13 @@ LIVE_MODEL = "gemini-3.8-live"
 INPUT_MIME = "audio/pcm;rate=16000"
 IDLE_NUDGE_SECONDS = 8.0
 MAX_CONSECUTIVE_NUDGES = 2
+CLOSING_PHRASES = ("goodbye", "you can end the call", "end the call")
 logger = logging.getLogger(__name__)
+
+
+def _is_closing_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in CLOSING_PHRASES)
 
 
 def live_config() -> dict[str, Any]:
@@ -34,9 +40,9 @@ def live_config() -> dict[str, Any]:
         "realtime_input_config": {
             "automatic_activity_detection": {
                 "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
-                "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
+                "end_of_speech_sensitivity": "END_SENSITIVITY_HIGH",
                 "prefix_padding_ms": 300,
-                "silence_duration_ms": 1200,
+                "silence_duration_ms": 700,
             }
         },
     }
@@ -55,7 +61,14 @@ def _pcm_bytes(data: Any) -> bytes | None:
     return bytes(data)
 
 
-async def _browser_to_gemini(websocket, session, stop: asyncio.Event) -> str:
+async def _browser_to_gemini(
+    websocket,
+    session,
+    stop: asyncio.Event,
+    playback_idle: asyncio.Event,
+    caller_spoke: asyncio.Event,
+    timing: dict[str, float | None],
+) -> str:
     try:
         while not stop.is_set():
             message = await websocket.receive()
@@ -68,13 +81,17 @@ async def _browser_to_gemini(websocket, session, stop: asyncio.Event) -> str:
                     continue
                 if payload.get("type") == "end":
                     return "client_disconnect"
+                if payload.get("type") == "playback_idle":
+                    playback_idle.set()
                 continue
             chunk = message.get("bytes")
             if not chunk:
                 continue
+            caller_spoke.set()
             await session.send_realtime_input(
                 audio=types.Blob(data=chunk, mime_type=INPUT_MIME)
             )
+            timing["last_mic_sent_at"] = time.monotonic()
     except WebSocketDisconnect:
         return "client_disconnect"
     finally:
@@ -83,11 +100,17 @@ async def _browser_to_gemini(websocket, session, stop: asyncio.Event) -> str:
 
 
 async def _gemini_to_browser(
-    websocket, session, stop: asyncio.Event, transcript_seen: asyncio.Event
+    websocket,
+    session,
+    stop: asyncio.Event,
+    transcript_seen: asyncio.Event,
+    playback_idle: asyncio.Event,
+    caller_spoke: asyncio.Event,
+    timing: dict[str, float | None],
 ) -> str:
     nudge_task = None
     nudge_state = {"count": 0}
-    caller_spoke = asyncio.Event()
+    nudging_disabled = False
     try:
         while True:
             async for response in session.receive():
@@ -105,8 +128,22 @@ async def _gemini_to_browser(
                 if not content:
                     continue
                 if content.interrupted is True:
+                    if nudge_state.get("last_sent_at") is not None:
+                        logger.info(
+                            "Live response interrupted; seconds since nudge: %.2f",
+                            time.monotonic() - nudge_state["last_sent_at"],
+                        )
+                    else:
+                        logger.info("Live response interrupted")
                     await websocket.send_json({"type": "interrupted"})
+                    if nudge_task and not nudge_task.done():
+                        nudge_task.cancel()
+                        await asyncio.gather(nudge_task, return_exceptions=True)
                     continue
+                if getattr(content, "turn_complete", None) is True:
+                    if nudge_task and not nudge_task.done():
+                        nudge_task.cancel()
+                        await asyncio.gather(nudge_task, return_exceptions=True)
                 for transcription, speaker in (
                     (getattr(content, "input_transcription", None), "customer"),
                     (getattr(content, "output_transcription", None), "assistant"),
@@ -132,6 +169,8 @@ async def _gemini_to_browser(
                                 ),
                             }
                         )
+                        if speaker == "assistant" and _is_closing_text(text):
+                            nudging_disabled = True
                 if getattr(content, "model_turn", None):
                     for part in content.model_turn.parts or []:
                         inline = getattr(part, "inline_data", None)
@@ -140,19 +179,39 @@ async def _gemini_to_browser(
                         )
                         if not pcm:
                             continue
+                        if (
+                            timing["last_mic_sent_at"] is not None
+                            and not timing["response_logged"]
+                        ):
+                            latency_ms = (
+                                time.monotonic() - timing["last_mic_sent_at"]
+                            ) * 1000
+                            logger.info(
+                                "response_latency_ms=%.0f", latency_ms
+                            )
+                            timing["response_logged"] = True
                         await websocket.send_json(
                             {"type": "status", "value": "speaking"}
                         )
                         await websocket.send_bytes(pcm)
                 if getattr(content, "generation_complete", None) is True:
+                    timing["response_logged"] = False
                     await websocket.send_json(
                         {"type": "status", "value": "listening"}
                     )
-                    if nudge_state["count"] < MAX_CONSECUTIVE_NUDGES:
-                        caller_spoke = asyncio.Event()
+                    caller_spoke.clear()
+                    playback_idle.clear()
+                    if not nudging_disabled:
+                        if nudge_task and not nudge_task.done():
+                            nudge_task.cancel()
                         nudge_task = asyncio.create_task(
                             _idle_nudge_loop(
-                                session, stop, caller_spoke, nudge_state
+                                session,
+                                stop,
+                                playback_idle,
+                                caller_spoke,
+                                nudge_state,
+                                lambda: nudging_disabled,
                             )
                         )
     except WebSocketDisconnect:
@@ -170,22 +229,41 @@ async def _gemini_to_browser(
         stop.set()
     return "session_closed"
 
-
 async def _idle_nudge_loop(
     session,
     stop: asyncio.Event,
+    playback_idle: asyncio.Event,
     caller_spoke: asyncio.Event,
     nudge_state,
+    is_disabled,
 ) -> None:
+    if stop.is_set():
+        return
     try:
+        playback_wait = asyncio.create_task(playback_idle.wait())
+        caller_wait = asyncio.create_task(caller_spoke.wait())
+        done, pending = await asyncio.wait(
+            {playback_wait, caller_wait},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        if caller_wait in done:
+            return
+        if stop.is_set():
+            return
         await asyncio.wait_for(caller_spoke.wait(), timeout=IDLE_NUDGE_SECONDS)
     except asyncio.TimeoutError:
         if (
             not stop.is_set()
             and nudge_state["count"] < MAX_CONSECUTIVE_NUDGES
+            and not is_disabled()
         ):
             await session.send_realtime_input(text=IDLE_NUDGE_TRIGGER)
             nudge_state["count"] += 1
+            nudge_state["last_sent_at"] = time.monotonic()
+            logger.info("Idle nudge sent")
 
 
 async def _send_duration(
@@ -215,9 +293,32 @@ async def run_live_bridge(websocket) -> None:
         async with live_connect(settings.GEMINI_API_KEY, live_config()) as session:
             await session.send_realtime_input(text=GREETING_TRIGGER)
             await websocket.send_json({"type": "status", "value": "listening"})
-            sender = asyncio.create_task(_browser_to_gemini(websocket, session, stop))
+            playback_idle = asyncio.Event()
+            caller_spoke = asyncio.Event()
+            timing = {
+                "last_mic_sent_at": None,
+                "response_logged": False,
+            }
+            sender = asyncio.create_task(
+                _browser_to_gemini(
+                    websocket,
+                    session,
+                    stop,
+                    playback_idle,
+                    caller_spoke,
+                    timing,
+                )
+            )
             receiver = asyncio.create_task(
-                _gemini_to_browser(websocket, session, stop, transcript_seen)
+                _gemini_to_browser(
+                    websocket,
+                    session,
+                    stop,
+                    transcript_seen,
+                    playback_idle,
+                    caller_spoke,
+                    timing,
+                )
             )
             duration_task = asyncio.create_task(
                 _duration_loop(websocket, started_at, stop)
