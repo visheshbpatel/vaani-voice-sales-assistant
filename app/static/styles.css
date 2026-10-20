@@ -89,6 +89,16 @@ h2 {
   gap: 0.75rem;
 }
 
+.collected-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem 1rem;
+}
+
+.collected-details dd {
+  margin: 0;
+}
+
 button {
   font: inherit;
   padding: 0.55rem 1rem;

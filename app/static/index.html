@@ -16,6 +16,11 @@
       <p id="status" class="status">ended</p>
       <p class="duration">Duration: <span id="duration">00:00</span></p>
       <p id="error" class="error" hidden></p>
+      <label class="consent">
+        <input id="recording-consent" type="checkbox" />
+        I consent to recording this call for this prototype. Recordings are stored privately
+        and used only for this call record.
+      </label>
       <section>
         <h2>Conversation</h2>
         <div id="transcript" class="transcript" aria-live="polite">
@@ -27,6 +32,16 @@
         <button id="start" type="button">Start Call</button>
         <button id="end" type="button" disabled>End Call</button>
       </div>
+      <section id="follow-up" hidden>
+        <h2>Collected details</h2>
+        <p>Saved with this call record in the prototype. It is not sent to Surefy.</p>
+        <dl class="collected-details">
+          <dt>Name</dt><dd id="lead-name">Not collected</dd>
+          <dt>Company</dt><dd id="lead-company">Not collected</dd>
+          <dt>Phone/email</dt><dd id="lead-contact">Not collected</dd>
+          <dt>Preferred time</dt><dd id="lead-preferred-time">Not collected</dd>
+        </dl>
+      </section>
     </main>
     <script src="/static/app.js"></script>
   </body>

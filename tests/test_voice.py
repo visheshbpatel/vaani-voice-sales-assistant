@@ -4,8 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.database import Base
 from app.main import app
+from app.models.call import Call
 from app.routes import voice as voice_route
 from app.services import gemini_live
 from app.services.product_knowledge import GREETING_TRIGGER, IDLE_NUDGE_TRIGGER
@@ -65,6 +70,14 @@ def _receive_until(ws, message_type):
         message = ws.receive_json()
         if message["type"] == message_type:
             return message
+
+
+def _receive_startup(ws):
+    assert ws.receive_json() == {"type": "status", "value": "connecting"}
+    call_started = ws.receive_json()
+    assert call_started["type"] == "call_started"
+    assert isinstance(call_started["call_id"], int)
+    assert ws.receive_json() == {"type": "status", "value": "listening"}
 
 
 def _audio_event(pcm: bytes):
@@ -161,6 +174,7 @@ def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
             assert ws.receive_json() == {"type": "status", "value": "connecting"}
+            assert ws.receive_json()["type"] == "call_started"
             assert ws.receive_json() == {"type": "status", "value": "listening"}
             ws.send_bytes(b"\x00\x00" * 160)
             assert ws.receive_json() == {"type": "status", "value": "speaking"}
@@ -181,8 +195,7 @@ def test_interrupt_is_forwarded(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
-            ws.receive_json()
-            ws.receive_json()
+            _receive_startup(ws)
             assert ws.receive_json() == {"type": "interrupted"}
 
 
@@ -199,8 +212,7 @@ def test_transcript_forwards_partial_and_final_turns(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
-            ws.receive_json()
-            ws.receive_json()
+            _receive_startup(ws)
             messages = [ws.receive_json() for _ in range(4)]
 
     assert messages == [
@@ -244,8 +256,7 @@ def test_transcript_fragments_preserve_speaker_order(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
-            ws.receive_json()
-            ws.receive_json()
+            _receive_startup(ws)
             messages = [ws.receive_json() for _ in range(4)]
 
     assert [(message["speaker"], message["text"], message["partial"]) for message in messages] == [
@@ -400,8 +411,7 @@ def test_receive_loop_forwards_multiple_turns_and_stays_open(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
-            ws.receive_json()
-            ws.receive_json()
+            _receive_startup(ws)
             assert ws.receive_json() == {"type": "status", "value": "speaking"}
             assert ws.receive_bytes() == b"\x01\x00" * 8
             assert ws.receive_json() == {"type": "status", "value": "listening"}
@@ -430,8 +440,7 @@ def test_kickoff_is_sent_once_and_not_as_customer_transcript(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
-            ws.receive_json()
-            ws.receive_json()
+            _receive_startup(ws)
             transcript = ws.receive_json()
 
     assert session.sent == [{"text": GREETING_TRIGGER}]
@@ -466,8 +475,7 @@ def test_cleanup_releases_gate_after_disconnect(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as ws:
-            ws.receive_json()
-            ws.receive_json()
+            _receive_startup(ws)
         with client.websocket_connect("/ws/voice") as ws2:
             assert ws2.receive_json()["value"] == "connecting"
 
@@ -481,11 +489,47 @@ def test_duplicate_session_rejected(monkeypatch):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/voice") as first:
-            first.receive_json()
-            first.receive_json()
+            _receive_startup(first)
             with client.websocket_connect("/ws/voice") as second:
                 payload = second.receive_json()
                 assert payload == {
                     "type": "error",
                     "message": "A call is already in progress.",
                 }
+
+
+def test_call_end_persists_browser_lead_details(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(voice_route, "SessionLocal", test_session)
+
+    session = FakeSession([], hang=asyncio.Event())
+    monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
+    details = {
+        "name": "Vishesh Patel",
+        "company": "Samsung",
+        "contact": "visheshpatel599@gmail.com",
+        "preferred_time": "tomorrow morning at 11 AM",
+    }
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/voice") as ws:
+            _receive_startup(ws)
+            ws.send_json({"type": "lead_details", "value": details})
+            ws.send_json({"type": "end"})
+
+    with test_session() as db:
+        calls = list(db.scalars(select(Call)))
+        assert len(calls) == 1
+        call = calls[0]
+        assert call.ended_at is not None
+        assert call.lead_name == details["name"]
+        assert call.lead_company == details["company"]
+        assert call.lead_contact == details["contact"]
+        assert call.lead_preferred_time == details["preferred_time"]
+        assert call.lead_contact_consent is True

@@ -4,6 +4,12 @@ const startBtn = document.getElementById("start");
 const endBtn = document.getElementById("end");
 const durationEl = document.getElementById("duration");
 const transcriptEl = document.getElementById("transcript");
+const followUpEl = document.getElementById("follow-up");
+const recordingConsent = document.getElementById("recording-consent");
+const leadNameEl = document.getElementById("lead-name");
+const leadCompanyEl = document.getElementById("lead-company");
+const leadContactEl = document.getElementById("lead-contact");
+const leadPreferredTimeEl = document.getElementById("lead-preferred-time");
 
 const OUTPUT_RATE = 24000;
 
@@ -22,6 +28,18 @@ let activeTranscriptEntry = null;
 let activeTranscriptSpeaker = null;
 let shouldAutoScroll = true;
 let assistantAudioPending = false;
+let currentCallId = null;
+let recorder = null;
+let recordingChunks = [];
+let recordingType = "";
+let recordingDestination = null;
+let recordingSourceNode = null;
+let recordingUploadPromise = null;
+let pendingLeadDetail = null;
+let recordingConsentSent = false;
+let customerTranscript = [];
+let leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
+let leadDetailsConfirmed = false;
 
 function setStatus(value) {
   statusEl.textContent = value;
@@ -53,6 +71,51 @@ function formatDuration(seconds) {
 
 function setDuration(seconds) {
   durationEl.textContent = formatDuration(seconds);
+}
+
+function setLeadDetail(name, value) {
+  if (value && leadDetails[name] !== undefined) {
+    leadDetails[name] = value.trim();
+  }
+}
+
+function extractAssistantLeadDetails(text) {
+  const value = text.trim();
+  const name = value.match(
+    /(?:your|the) name is\s+(.+?)(?=,\s*(?:the )?company is|,\s*company is)/i,
+  );
+  const company = value.match(
+    /(?:the )?company is\s+(.+?)(?=,\s*(?:your )?(?:email|phone)|,\s*and\s+(?:your )?(?:email|phone))/i,
+  );
+  const email = value.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/);
+  const phone = value.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+  const preferred = value.match(
+    /(?:you.?d prefer|preferred time is|prefer(?:red)? time(?: would be)? is?)\s+(.+?)(?=\.\s|,\s*is that|\?|$)/i,
+  );
+  if (name) setLeadDetail("name", name[1].trim());
+  if (company) setLeadDetail("company", company[1].trim());
+  if (email) setLeadDetail("contact", email[0]);
+  else if (phone) setLeadDetail("contact", phone[0].trim());
+  if (preferred) {
+    setLeadDetail(
+      "preferred_time",
+      preferred[1]
+        .replace(/^the demo\s+/i, "")
+        .replace(/[.!]+$/, "")
+        .trim(),
+    );
+  }
+  if (name || company || email || phone || preferred) {
+    leadDetailsConfirmed = true;
+    renderLeadDetails();
+  }
+}
+
+function renderLeadDetails() {
+  leadNameEl.textContent = leadDetails.name || "Not collected";
+  leadCompanyEl.textContent = leadDetails.company || "Not collected";
+  leadContactEl.textContent = leadDetails.contact || "Not collected";
+  leadPreferredTimeEl.textContent = leadDetails.preferred_time || "Not collected";
 }
 
 function clearTranscript() {
@@ -107,13 +170,86 @@ function addTranscriptMessage(speaker, text, partial) {
     transcriptEl.appendChild(message);
     activeTranscriptEntry = message;
   }
-  message.lastChild.textContent = mergeTranscriptText(
-    message.lastChild.textContent,
-    text,
-  );
+  const previousText = message.lastChild.textContent;
+  message.lastChild.textContent =
+    !partial && message.dataset.partial === "true"
+      ? text.trim()
+      : mergeTranscriptText(previousText, text);
+  if (speaker === "assistant" && !partial) {
+    const completeText = message.lastChild.textContent;
+    extractAssistantLeadDetails(completeText);
+    pendingLeadDetail = detailPromptType(completeText);
+  }
+  if (speaker === "customer" && !partial) {
+    const completeText = message.lastChild.textContent;
+    updateLeadDraft(completeText);
+    if (/^(correct|yes|that'?s correct|looks good)$/i.test(completeText.trim())) {
+      leadDetailsConfirmed = true;
+      renderLeadDetails();
+    }
+  }
   message.dataset.partial = String(partial);
   if (!partial) {
     finalizeTranscriptMessage();
+  }
+
+  function detailPromptType(text) {
+    const value = text.toLowerCase();
+    if (value.includes("full name") || value.includes("your name")) return "name";
+    if (value.includes("company")) return "company";
+    if (value.includes("phone") || value.includes("email")) return "contact";
+    if (value.includes("preferred time") || value.includes("best time")) return "preferred_time";
+    return null;
+  }
+
+  function updateLeadDraft(text) {
+    const value = text.trim();
+    customerTranscript.push(value);
+    const email = value.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/);
+    const phone = value.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+    const name = value.match(/(?:my\s+)?name\s+is\s+([^,.;]+?)(?=\s+and\s+|\s+contact\s+is\s+|$)/i);
+    const company = value.match(/(?:my\s+)?company\s+is\s+([^,.;]+?)(?=\s+and\s+|$)/i);
+    if (name) setLeadDetail("name", name[1]);
+    if (company) setLeadDetail("company", company[1]);
+    if (email) {
+      setLeadDetail("contact", email[0]);
+    }
+    if (phone) {
+      setLeadDetail("contact", phone[0]);
+    }
+    if (!name && pendingLeadDetail === "name") {
+      setLeadDetail("name", value);
+    }
+    if (!company && pendingLeadDetail === "company") {
+      setLeadDetail("company", value);
+    }
+    if (pendingLeadDetail === "preferred_time") {
+      setLeadDetail("preferred_time", value);
+    }
+    if (pendingLeadDetail && !email) {
+      setLeadDetail(pendingLeadDetail, value
+        .replace(/^(my name is|name is|my company is|company is)\s+/i, "")
+        .replace(/[.!?]+$/, "")
+        .trim());
+    }
+    if (pendingLeadDetail === "contact" && !email) {
+      setLeadDetail("contact", value);
+    }
+    pendingLeadDetail = null;
+    extractLeadDetailsFromTranscript();
+  }
+
+  function extractLeadDetailsFromTranscript() {
+    const text = customerTranscript.join(" ");
+    const email = text.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/);
+    const phone = text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+    const name = text.match(/(?:my\s+)?name\s+is\s+([^,.;]+?)(?=\s+and\s+|\s+contact\s+is\s+|$)/i);
+    const company = text.match(/(?:my\s+)?company\s+is\s+([^,.;]+?)(?=\s+and\s+|$)/i);
+    if (name) setLeadDetail("name", name[1]);
+    if (company) setLeadDetail("company", company[1]);
+    if (email) setLeadDetail("contact", email[0]);
+    else if (phone) setLeadDetail("contact", phone[0]);
+    renderLeadDetails();
   }
   if (shouldAutoScroll) {
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -142,7 +278,10 @@ function micErrorMessage(err) {
   if (name === "NotReadableError") {
     return "The microphone is already in use or could not be opened.";
   }
-  return "Could not access the microphone.";
+  if (name === "SecurityError") {
+    return "Microphone access is blocked for this page.";
+  }
+  return `Could not initialize the call audio: ${err?.message || "unknown browser error"}`;
 }
 
 function stopPlayback() {
@@ -176,6 +315,9 @@ function enqueuePcm16(pcmBuffer) {
   const source = playbackCtx.createBufferSource();
   source.buffer = buffer;
   source.connect(playbackCtx.destination);
+  if (recordingDestination) {
+    source.connect(recordingDestination);
+  }
   const startAt = Math.max(playbackCtx.currentTime, nextPlayTime);
   source.onended = () => {
     activeSources = activeSources.filter((item) => item !== source);
@@ -224,6 +366,10 @@ function cleanup(closeSocket = true) {
     sourceNode.disconnect();
     sourceNode = null;
   }
+  if (recordingSourceNode) {
+    recordingSourceNode.disconnect();
+    recordingSourceNode = null;
+  }
   if (mediaStream) {
     for (const track of mediaStream.getTracks()) {
       track.stop();
@@ -238,19 +384,37 @@ function cleanup(closeSocket = true) {
     playbackCtx.close();
     playbackCtx = null;
   }
+  recordingDestination = null;
+  recorder = null;
   starting = false;
   startBtn.disabled = false;
   endBtn.disabled = true;
 }
 
-function endCall() {
+async function endCall() {
+  if (recorder && recorder.state === "recording") {
+    recordingUploadPromise = new Promise((resolve) => {
+      const previous = recorder.onstop;
+      recorder.onstop = async () => {
+        if (previous) await previous();
+        resolve();
+      };
+    });
+    recorder.stop();
+    await recordingUploadPromise;
+  }
   if (ws && ws.readyState === WebSocket.OPEN) {
+    if (Object.values(leadDetails).some(Boolean)) {
+      ws.send(JSON.stringify({ type: "lead_details", value: leadDetails }));
+    }
     ws.send(JSON.stringify({ type: "end" }));
     cleanup(false);
   } else {
     cleanup();
   }
   setStatus("ended");
+  await saveLeadDetails();
+  followUpEl.hidden = false;
 }
 
 function handleSocketMessage(event) {
@@ -279,6 +443,10 @@ function handleSocketMessage(event) {
     setDuration(payload.seconds);
     return;
   }
+  if (payload.type === "call_started") {
+    currentCallId = payload.call_id;
+    return;
+  }
   if (payload.type === "transcript" && payload.speaker && payload.text) {
     addTranscriptMessage(payload.speaker, payload.text, payload.partial === true);
     return;
@@ -299,7 +467,9 @@ function handleSocketMessage(event) {
   }
   if (payload.type === "error" && payload.message) {
     setError(payload.message);
-    endCall();
+    if (payload.fatal !== false) {
+      endCall();
+    }
   }
 }
 
@@ -312,6 +482,15 @@ async function startCall() {
   setStatus("connecting");
   setDuration(0);
   clearTranscript();
+  currentCallId = null;
+  recordingUploadPromise = null;
+  pendingLeadDetail = null;
+  recordingConsentSent = false;
+  customerTranscript = [];
+  leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
+  leadDetailsConfirmed = false;
+  renderLeadDetails();
+  followUpEl.hidden = true;
   startBtn.disabled = true;
   endBtn.disabled = false;
   try {
@@ -350,10 +529,105 @@ async function startCall() {
         endCall();
       }
     };
+    ws.onopen = () => {
+      if (recordingConsent.checked && recorder && !recordingConsentSent) {
+        ws.send(JSON.stringify({ type: "recording_consent", value: true }));
+        recordingConsentSent = true;
+      }
+    };
+    if (recordingConsent.checked) {
+      recordingType = ["audio/webm", "audio/ogg"].find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      );
+      if (recordingType) {
+        recordingChunks = [];
+        recordingDestination = playbackCtx.createMediaStreamDestination();
+        recordingSourceNode = playbackCtx.createMediaStreamSource(mediaStream);
+        recordingSourceNode.connect(recordingDestination);
+        recorder = new MediaRecorder(recordingDestination.stream, {
+          mimeType: recordingType,
+        });
+        recorder.ondataavailable = (event) => {
+          if (event.data.size) recordingChunks.push(event.data);
+        };
+        recorder.onstop = uploadRecording;
+        recorder.start();
+        if (ws.readyState === WebSocket.OPEN && !recordingConsentSent) {
+          ws.send(JSON.stringify({ type: "recording_consent", value: true }));
+          recordingConsentSent = true;
+        }
+      } else {
+        setError("This browser cannot record in a supported audio format. The call can continue without recording.");
+      }
+    }
     starting = false;
   } catch (err) {
     setError(micErrorMessage(err));
     endCall();
+  }
+}
+
+async function uploadRecording() {
+  if (!recordingChunks.length) return;
+  if (!currentCallId) {
+    setError("The call ended, but its recording could not be linked to the call record.");
+    return;
+  }
+  try {
+    const response = await fetch(`/api/calls/${currentCallId}/recording`, {
+      method: "PUT",
+      headers: { "Content-Type": recordingType },
+      body: new Blob(recordingChunks, { type: recordingType }),
+    });
+    if (!response.ok) throw new Error("upload failed");
+  } catch (_err) {
+    setError("The call ended, but its recording could not be saved.");
+  }
+}
+
+async function saveLeadDetails() {
+  if (!currentCallId) {
+    setError("This call was not saved, so collected details cannot be stored.");
+    return;
+  }
+  try {
+    let savedCall = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await fetch(`/api/calls/${currentCallId}`);
+      if (response.ok) {
+        savedCall = await response.json();
+        if (
+          savedCall.lead_name ||
+          savedCall.lead_company ||
+          savedCall.lead_contact ||
+          savedCall.lead_preferred_time
+        ) {
+          break;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    if (!savedCall) throw new Error("call unavailable");
+    const savedDetails = {
+      name: savedCall.lead_name || leadDetails.name,
+      company: savedCall.lead_company || leadDetails.company,
+      contact: savedCall.lead_contact || leadDetails.contact,
+      preferred_time: savedCall.lead_preferred_time || leadDetails.preferred_time,
+    };
+    if (!Object.values(savedDetails).some(Boolean)) {
+      throw new Error("details unavailable");
+    }
+    leadDetails = savedDetails;
+    renderLeadDetails();
+    response = await fetch(`/api/calls/${currentCallId}/lead`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...savedDetails, consent: true }),
+    });
+    if (!response.ok) throw new Error("save failed");
+    setError("");
+  } catch (_err) {
+    setError("Could not save collected details.");
   }
 }
 

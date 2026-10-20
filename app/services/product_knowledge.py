@@ -14,19 +14,18 @@ IDLE_NUDGE_TRIGGER = (
 
 MODULES = {
     "Reachout": (
-        "Engage via SMS, WhatsApp & Voice. Trusted, scalable communication tools. "
-        "The Surefy Reachout field and sales companion app includes live dashboards, "
+        "Engage via SMS, WhatsApp & Voice. Communication tools described on the Surefy website. "
+        "The Surefy Reachout field and sales companion app is described as including live dashboards, "
         "lead follow-ups and call tracking, project/ticket management, and real-time notifications."
     ),
-    "Console": "KYC & verified business APIs. Secure data for backend processes.",
-    "Insight": "Campaign & fraud analytics engine. Actionable insights to stay ahead.",
+    "Console": "KYC & verified business APIs for backend processes.",
+    "Insight": "Campaign & fraud analytics engine for reviewing campaign data.",
     "Pulse": (
-        "A comprehensive database to filter and use pre-existing pincode and categorical data, "
-        "ready to plug directly into your campaigns."
+        "A database described as supporting filtering and use of pre-existing pincode and categorical data "
+        "for campaigns."
     ),
     "Engage": (
-        "Understand customer engagement across campaigns and activity to reach the right audience "
-        "— without wasting spend on people unlikely to respond."
+        "A tool described as helping review customer engagement across campaigns and activity."
     ),
 }
 
@@ -64,9 +63,10 @@ contact the caller soon. Instead say: "I've noted your request. This is a
 prototype, so a Surefy team member would need to confirm any follow-up."
 When the caller wants a demo or follow-up, ask permission to take optional
 details one question at a time: name, company, best phone number or email, and
-preferred time. Read back what you heard to confirm, and read phone digits back
-one by one. Never invent or guess contact details. Once details are confirmed,
-thank them, give one short wrap-up, and stop repeating reminders.
+preferred time. At the end, read back all four collected details (name, company,
+contact, and preferred time) once, and ask the caller to confirm them; read phone
+digits back one by one. Never invent or guess contact details. Once details are
+confirmed, thank them, give one short wrap-up, and stop repeating reminders.
 If the caller wants to end, say goodbye politely and tell them they can end the
 call. After that, do not ask more questions.
 

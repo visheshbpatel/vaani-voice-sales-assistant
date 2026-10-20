@@ -3,11 +3,12 @@ import base64
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 from google import genai
 from google.genai import types
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketDisconnected
 
 from app.config import settings
 from app.services.product_knowledge import (
@@ -68,6 +69,8 @@ async def _browser_to_gemini(
     playback_idle: asyncio.Event,
     caller_spoke: asyncio.Event,
     timing: dict[str, float | None],
+    on_recording_consent=None,
+    on_lead_details=None,
 ) -> str:
     try:
         while not stop.is_set():
@@ -81,6 +84,10 @@ async def _browser_to_gemini(
                     continue
                 if payload.get("type") == "end":
                     return "client_disconnect"
+                if payload.get("type") == "recording_consent" and on_recording_consent:
+                    on_recording_consent(bool(payload.get("value")))
+                if payload.get("type") == "lead_details" and on_lead_details:
+                    on_lead_details(payload.get("value"))
                 if payload.get("type") == "playback_idle":
                     playback_idle.set()
                 continue
@@ -107,6 +114,7 @@ async def _gemini_to_browser(
     playback_idle: asyncio.Event,
     caller_spoke: asyncio.Event,
     timing: dict[str, float | None],
+    on_transcript: Callable[[str, str, bool], None] | None = None,
 ) -> str:
     nudge_task = None
     nudge_state = {"count": 0}
@@ -151,6 +159,12 @@ async def _gemini_to_browser(
                     text = getattr(transcription, "text", None) if transcription else None
                     if text:
                         transcript_seen.set()
+                        if on_transcript:
+                            on_transcript(
+                                speaker,
+                                text,
+                                bool(getattr(transcription, "finished", False)),
+                            )
                         if speaker == "customer":
                             caller_spoke.set()
                             nudge_state["count"] = 0
@@ -278,13 +292,20 @@ async def _send_duration(
     )
 
 
-async def run_live_bridge(websocket) -> None:
+async def run_live_bridge(
+    websocket,
+    on_transcript=None,
+    send_connecting: bool = True,
+    on_recording_consent=None,
+    on_lead_details=None,
+) -> None:
     if not settings.GEMINI_API_KEY:
         await websocket.send_json(
             {"type": "error", "message": "Server is missing GEMINI_API_KEY."}
         )
         return
-    await websocket.send_json({"type": "status", "value": "connecting"})
+    if send_connecting:
+        await websocket.send_json({"type": "status", "value": "connecting"})
     stop = asyncio.Event()
     started_at = time.monotonic()
     transcript_seen = asyncio.Event()
@@ -307,6 +328,8 @@ async def run_live_bridge(websocket) -> None:
                     playback_idle,
                     caller_spoke,
                     timing,
+                    on_recording_consent,
+                    on_lead_details,
                 )
             )
             receiver = asyncio.create_task(
@@ -318,6 +341,7 @@ async def run_live_bridge(websocket) -> None:
                     playback_idle,
                     caller_spoke,
                     timing,
+                    on_transcript,
                 )
             )
             duration_task = asyncio.create_task(
@@ -343,6 +367,8 @@ async def run_live_bridge(websocket) -> None:
                         "message": "Live transcription was unavailable for this call.",
                     }
                 )
+    except (WebSocketDisconnect, WebSocketDisconnected):
+        return
     except Exception:
         await websocket.send_json(
             {"type": "error", "message": "Could not start or keep the voice session."}

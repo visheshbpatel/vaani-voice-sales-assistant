@@ -5,11 +5,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.routes.voice import router as voice_router
+from app.routes.calls import router as calls_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Vaani")
 app.include_router(voice_router)
+app.include_router(calls_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
