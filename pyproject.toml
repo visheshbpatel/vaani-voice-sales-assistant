@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vaani"
+version = "0.2.0"
+description = "Unofficial prototype: real-time AI voice sales assistant for Surefy"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.150.0",
+    "uvicorn[standard]==0.54.0",
+    "pydantic-settings==2.16.0",
+    "google-genai==1.75.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-asyncio==0.25.3",
+    "httpx==0.28.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
