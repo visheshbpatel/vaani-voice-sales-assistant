@@ -7,6 +7,7 @@ from app.main import app
 from app.models.call import CallStatus, SummaryGenerationStatus
 from app.routes.calls import create_call, finalize_call, generate_call_summary
 from app.services import call_summary
+from app.security import make_call_token
 
 
 def _valid_summary() -> dict:
@@ -73,7 +74,10 @@ def test_retry_updates_same_record(db_session, monkeypatch):
     )
 
     with TestClient(app) as client:
-        response = client.post(f"/api/calls/{call.id}/summary/retry")
+        response = client.post(
+            f"/api/calls/{call.id}/summary/retry",
+            headers={"X-Call-Token": make_call_token(call.id)},
+        )
     assert response.status_code == 200
     assert response.json()["id"] == call.id
     assert response.json()["status"] == "Interested"

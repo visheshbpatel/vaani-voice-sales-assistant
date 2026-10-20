@@ -12,6 +12,8 @@ from app.routes.calls import create_call, finalize_call
 from app.routes.voice import _merge_transcript_text
 from app.services import recording_storage
 from app import database
+from app.config import settings
+from app.security import make_call_token
 
 
 def test_database_url_normalizes_postgres_and_default_path(monkeypatch):
@@ -156,6 +158,7 @@ def test_history_retrieval_and_lead_patch(db_session):
         }
         response = client.patch(
             f"/api/calls/{call.id}/lead",
+            headers={"X-Call-Token": make_call_token(call.id)},
             json={
                 "name": "A prospect",
                 "company": "Acme",
@@ -166,6 +169,96 @@ def test_history_retrieval_and_lead_patch(db_session):
         )
         assert response.status_code == 200
         assert response.json()["lead_company"] == "Acme"
+
+
+def test_history_password_protects_reads_and_writes_without_auth_header(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "HISTORY_PASSWORD", "history-secret")
+    call = create_call(db_session)
+    with TestClient(app) as client:
+        for method, url in (
+            ("get", "/api/calls"),
+            ("get", f"/api/calls/{call.id}"),
+            ("patch", f"/api/calls/{call.id}/lead"),
+            ("post", f"/api/calls/{call.id}/summary/retry"),
+        ):
+            response = (
+                client.patch(url, json={})
+                if method == "patch"
+                else getattr(client, method)(url)
+            )
+            assert response.status_code == 401
+            assert "www-authenticate" not in response.headers
+
+
+def test_call_token_allows_call_specific_operations(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "HISTORY_PASSWORD", "history-secret")
+    call = create_call(db_session)
+    token = make_call_token(call.id)
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/calls/{call.id}", headers={"X-Call-Token": token}
+        )
+        update = client.patch(
+            f"/api/calls/{call.id}/lead",
+            headers={"X-Call-Token": token},
+            json={"name": "Prospect"},
+        )
+    assert response.status_code == 200
+    assert update.status_code == 200
+
+
+def test_recording_upload_normalizes_type_rejects_duplicate_and_size(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(settings, "RECORDING_MAX_BYTES", 3)
+    call = create_call(db_session)
+    call.recording_consent = True
+    db_session.commit()
+    async def save_recording(*args):
+        return "call-1/audio.webm"
+
+    monkeypatch.setattr("app.routes.calls.save_recording", save_recording)
+    headers = {
+        "content-type": "audio/webm;codecs=opus",
+        "X-Call-Token": make_call_token(call.id),
+    }
+    with TestClient(app) as client:
+        response = client.put(
+            f"/api/calls/{call.id}/recording", content=b"123", headers=headers
+        )
+        duplicate = client.put(
+            f"/api/calls/{call.id}/recording", content=b"123", headers=headers
+        )
+        oversized_call = create_call(db_session)
+        oversized_call.recording_consent = True
+        db_session.commit()
+        oversized = client.put(
+            f"/api/calls/{oversized_call.id}/recording",
+            content=b"1234",
+            headers={
+                "content-type": "audio/webm",
+                "X-Call-Token": make_call_token(oversized_call.id),
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["content_type"] == "audio/webm"
+    assert duplicate.status_code == 409
+    assert oversized.status_code == 413
+
+
+def test_local_recordings_can_be_disabled(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ALLOW_LOCAL_RECORDINGS", False)
+    monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", db_session.bind.url.database)
+    with pytest.raises(RuntimeError):
+        asyncio.run(recording_storage.save_recording(1, b"audio", "audio/webm"))
+    with TestClient(app) as client:
+        assert client.get("/api/calls/local/call-1/audio.webm").status_code == 404
+
+
+def test_local_recordings_hidden_when_history_password_is_set(monkeypatch):
+    monkeypatch.setattr(settings, "HISTORY_PASSWORD", "history-secret")
+    with TestClient(app) as client:
+        assert client.get("/api/calls/local/call-1/audio.webm").status_code == 404
 
 
 def test_history_has_parsed_summary_and_utc_datetimes(db_session):
@@ -191,7 +284,10 @@ def test_call_list_is_limited_and_retry_rejects_active_call(db_session):
     calls = [create_call(db_session) for _ in range(3)]
     with TestClient(app) as client:
         response = client.get("/api/calls?limit=2")
-        retry = client.post(f"/api/calls/{calls[0].id}/summary/retry")
+        retry = client.post(
+            f"/api/calls/{calls[0].id}/summary/retry",
+            headers={"X-Call-Token": make_call_token(calls[0].id)},
+        )
 
     assert response.status_code == 200
     assert len(response.json()) == 2
@@ -214,7 +310,10 @@ def test_recording_requires_consent(db_session):
         response = client.put(
             f"/api/calls/{call.id}/recording",
             content=b"audio",
-            headers={"content-type": "audio/webm"},
+            headers={
+                "content-type": "audio/webm",
+                "X-Call-Token": make_call_token(call.id),
+            },
         )
     assert response.status_code == 400
 

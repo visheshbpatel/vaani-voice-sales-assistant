@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,6 +12,8 @@ from app.database import SessionLocal
 from app.models.call import Call
 from app.routes.calls import create_call, finalize_call, generate_call_summary
 from app.services.gemini_live import run_live_bridge
+from app.config import settings
+from app.security import make_call_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -102,6 +105,21 @@ async def _send_quietly(websocket: WebSocket, message: dict[str, Any]) -> None:
 
 @router.websocket("/ws/voice")
 async def voice_socket(websocket: WebSocket) -> None:
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+    allowed_origins = {
+        value.strip()
+        for value in settings.ALLOWED_ORIGINS.split(",")
+        if value.strip()
+    }
+    if (
+        origin
+        and host
+        and urlsplit(origin).netloc != host
+        and origin not in allowed_origins
+    ):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     if not await try_acquire_call():
         await websocket.send_json(
@@ -155,19 +173,39 @@ async def voice_socket(websocket: WebSocket) -> None:
             call = await asyncio.to_thread(_create_call)
             call_id = call.id
             await _send_quietly(
-                websocket, {"type": "call_started", "call_id": call_id}
+                websocket,
+                {"type": "call_started", "call_id": call_id, "token": make_call_token(call_id)},
             )
         except SQLAlchemyError:
             logger.exception("Could not create call history record.")
             persistence_error = (
                 "Call history is unavailable; the call can continue without saving."
             )
-        await run_live_bridge(
-            websocket,
-            collect_transcript,
-            send_connecting=False,
-            on_recording_consent=record_consent,
-        )
+        if settings.MAX_CALL_SECONDS:
+            try:
+                async with asyncio.timeout(settings.MAX_CALL_SECONDS):
+                    await run_live_bridge(
+                        websocket,
+                        collect_transcript,
+                        send_connecting=False,
+                        on_recording_consent=record_consent,
+                    )
+            except TimeoutError:
+                await _send_quietly(
+                    websocket,
+                    {
+                        "type": "error",
+                        "message": "The call reached the maximum length and was ended.",
+                        "fatal": True,
+                    },
+                )
+        else:
+            await run_live_bridge(
+                websocket,
+                collect_transcript,
+                send_connecting=False,
+                on_recording_consent=record_consent,
+            )
     except WebSocketDisconnect:
         pass
     except Exception:

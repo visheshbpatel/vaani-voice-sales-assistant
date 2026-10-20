@@ -1,8 +1,10 @@
 import logging
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import settings
@@ -28,6 +30,7 @@ def _client():
         aws_access_key_id=settings.R2_ACCESS_KEY_ID,
         aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
         region_name="auto",
+        config=Config(signature_version="s3v4"),
     )
 
 
@@ -36,7 +39,8 @@ async def save_recording(call_id: int, content: bytes, content_type: str) -> str
     object_key = f"call-{call_id}/{uuid4().hex}.{extension}"
     if configured():
         try:
-            _client().put_object(
+            await asyncio.to_thread(
+                _client().put_object,
                 Bucket=settings.R2_BUCKET_NAME,
                 Key=object_key,
                 Body=content,
@@ -47,6 +51,8 @@ async def save_recording(call_id: int, content: bytes, content_type: str) -> str
             raise RuntimeError("Recording storage is unavailable.")
         return object_key
 
+    if not settings.ALLOW_LOCAL_RECORDINGS:
+        raise RuntimeError("Recording storage is unavailable.")
     LOCAL_RECORDINGS.mkdir(exist_ok=True)
     path = LOCAL_RECORDINGS / object_key
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,9 +62,12 @@ async def save_recording(call_id: int, content: bytes, content_type: str) -> str
 
 async def signed_recording_url(object_key: str) -> str:
     if not configured():
+        if not settings.ALLOW_LOCAL_RECORDINGS:
+            raise RuntimeError("Recording playback is unavailable.")
         return f"/api/calls/local/{object_key}"
     try:
-        return _client().generate_presigned_url(
+        return await asyncio.to_thread(
+            _client().generate_presigned_url,
             "get_object",
             Params={"Bucket": settings.R2_BUCKET_NAME, "Key": object_key},
             ExpiresIn=300,

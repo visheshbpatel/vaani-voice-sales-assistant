@@ -2,7 +2,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pathlib import Path
 from sqlalchemy import select
@@ -14,6 +14,7 @@ from app.models.call import Call, CallStatus, SummaryGenerationStatus
 from app.schemas.call import CallHistory, CallListItem, LeadUpdate
 from app.services.recording_storage import save_recording, signed_recording_url
 from app.config import settings
+from app.security import require_history_access
 from app.services.call_summary import (
     SummaryGenerationError,
     generate_summary,
@@ -97,8 +98,10 @@ def _extract_lead_details(
 @router.get("", response_model=list[CallListItem])
 def list_calls(
     limit: int = Query(default=50, ge=1, le=200),
+    x_history_password: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> list[Call]:
+    require_history_access(None, x_history_password, None, list_access=True)
     try:
         return list(
             db.scalars(select(Call).order_by(Call.started_at.desc()).limit(limit)).all()
@@ -109,7 +112,13 @@ def list_calls(
 
 
 @router.get("/{call_id}", response_model=CallHistory)
-def get_call(call_id: int, db: Session = Depends(get_db)) -> Call:
+def get_call(
+    call_id: int,
+    x_history_password: str | None = Header(default=None),
+    x_call_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Call:
+    require_history_access(call_id, x_history_password, x_call_token)
     try:
         call = db.get(Call, call_id)
     except SQLAlchemyError:
@@ -121,7 +130,16 @@ def get_call(call_id: int, db: Session = Depends(get_db)) -> Call:
 
 
 @router.patch("/{call_id}/lead", response_model=CallHistory)
-def update_lead(call_id: int, update: LeadUpdate, db: Session = Depends(get_db)) -> Call:
+def update_lead(
+    call_id: int,
+    update: LeadUpdate,
+    x_history_password: str | None = Header(default=None),
+    x_call_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Call:
+    require_history_access(
+        call_id, x_history_password, x_call_token, require_credentials=True
+    )
     call = db.get(Call, call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")
@@ -160,7 +178,15 @@ def generate_call_summary(db: Session, call: Call) -> Call:
 
 
 @router.post("/{call_id}/summary/retry", response_model=CallHistory)
-def retry_summary(call_id: int, db: Session = Depends(get_db)) -> Call:
+def retry_summary(
+    call_id: int,
+    x_history_password: str | None = Header(default=None),
+    x_call_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Call:
+    require_history_access(
+        call_id, x_history_password, x_call_token, require_credentials=True
+    )
     call = db.get(Call, call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")
@@ -178,16 +204,34 @@ def retry_summary(call_id: int, db: Session = Depends(get_db)) -> Call:
 
 @router.put("/{call_id}/recording")
 async def upload_recording(call_id: int, request: Request, db: Session = Depends(get_db)):
+    require_history_access(
+        call_id,
+        request.headers.get("x-history-password"),
+        request.headers.get("x-call-token"),
+        require_credentials=True,
+    )
     call = db.get(Call, call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")
     if not call.recording_consent:
         raise HTTPException(status_code=400, detail="Recording consent was not provided.")
-    content_type = request.headers.get("content-type", "")
+    if call.recording_object_key:
+        raise HTTPException(status_code=409, detail="A recording already exists for this call.")
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if content_type not in {"audio/webm", "audio/ogg"}:
         raise HTTPException(status_code=415, detail="Unsupported recording format.")
-    content = await request.body()
-    if not content or len(content) > settings.RECORDING_MAX_BYTES:
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > settings.RECORDING_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > settings.RECORDING_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if not content:
         raise HTTPException(status_code=413, detail="Recording is empty or too large.")
     try:
         object_key = await save_recording(call_id, content, content_type)
@@ -203,6 +247,8 @@ async def upload_recording(call_id: int, request: Request, db: Session = Depends
 
 @router.get("/local/{object_key:path}")
 def get_local_recording(object_key: str):
+    if not settings.ALLOW_LOCAL_RECORDINGS or settings.HISTORY_PASSWORD:
+        raise HTTPException(status_code=404, detail="Recording is unavailable.")
     root = Path("recordings").resolve()
     path = (root / object_key).resolve()
     if root not in path.parents or not path.is_file():
@@ -211,7 +257,16 @@ def get_local_recording(object_key: str):
 
 
 @router.get("/{call_id}/recording")
-async def get_recording_url(call_id: int, db: Session = Depends(get_db)):
+async def get_recording_url(
+    call_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    require_history_access(
+        call_id,
+        request.headers.get("x-history-password"),
+        request.headers.get("x-call-token"),
+    )
     call = db.get(Call, call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")

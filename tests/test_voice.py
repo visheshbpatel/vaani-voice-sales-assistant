@@ -5,12 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from sqlalchemy import select
 from app.main import app
 from app.models.call import Call
 from app.routes import voice as voice_route
 from app.services import gemini_live
 from app.services.product_knowledge import GREETING_TRIGGER, IDLE_NUDGE_TRIGGER
+from app.config import settings
+from app.security import make_call_token
 
 
 class FakeSession:
@@ -184,6 +187,77 @@ def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
     assert session.closed is True
     assert session.sent[0] == {"text": GREETING_TRIGGER}
     assert any(item.get("audio") is not None for item in session.sent[1:])
+
+
+def test_call_started_includes_hmac_token(monkeypatch):
+    session = FakeSession([])
+    monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/voice") as ws:
+            assert ws.receive_json()["type"] == "status"
+            started = ws.receive_json()
+            assert started["token"] == make_call_token(started["call_id"])
+
+
+def test_async_recording_consent_callback_is_awaited():
+    consented = asyncio.Event()
+
+    class ConsentWebSocket:
+        messages = [
+            {"type": "websocket.receive", "text": '{"type":"recording_consent","value":true}'},
+            {"type": "websocket.receive", "text": '{"type":"end"}'},
+        ]
+
+        async def receive(self):
+            return self.messages.pop(0)
+
+    async def save_consent(value):
+        assert value is True
+        consented.set()
+
+    async def scenario():
+        stop = asyncio.Event()
+        await gemini_live._browser_to_gemini(
+            ConsentWebSocket(),
+            object(),
+            stop,
+            asyncio.Event(),
+            asyncio.Event(),
+            {"last_mic_sent_at": None},
+            on_recording_consent=save_consent,
+        )
+
+    asyncio.run(scenario())
+    assert consented.is_set()
+
+
+def test_rejects_cross_origin_websocket(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_ORIGINS", "")
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as error:
+            with client.websocket_connect(
+                    "/ws/voice",
+                    headers={"origin": "https://evil.example", "host": "testserver"},
+                ):
+                pass
+        assert error.value.code == 1008
+
+
+def test_call_timeout_sends_fatal_error_and_finalizes(monkeypatch):
+    async def slow_bridge(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(settings, "MAX_CALL_SECONDS", 0.01)
+    monkeypatch.setattr(voice_route, "run_live_bridge", slow_bridge)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/voice") as ws:
+            assert ws.receive_json()["type"] == "status"
+            assert ws.receive_json()["type"] == "call_started"
+            assert ws.receive_json() == {
+                "type": "error",
+                "message": "The call reached the maximum length and was ended.",
+                "fatal": True,
+            }
 
 
 def test_interrupt_is_forwarded(monkeypatch):
