@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,16 @@ class FakeSession:
         if self.hang is not None:
             self.hang.set()
         return False
+
+
+def _wait_for(predicate, timeout: float = 2.0) -> bool:
+    """Poll until predicate() is true. The app runs in another thread under TestClient."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def _audio_event(pcm: bytes):
@@ -79,7 +90,11 @@ def test_health():
 
 
 def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
-    session = FakeSession([_audio_event(b"\x00\x00" * 24), _complete_event()])
+    # hang keeps the fake session open, like a real call, until the client disconnects.
+    session = FakeSession(
+        [_audio_event(b"\x00\x00" * 24), _complete_event()],
+        hang=asyncio.Event(),
+    )
 
     def fake_connect(api_key, config):
         assert api_key == "test-key"
@@ -97,9 +112,12 @@ def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
             assert ws.receive_json() == {"type": "status", "value": "speaking"}
             assert ws.receive_bytes() == b"\x00\x00" * 24
             assert ws.receive_json() == {"type": "status", "value": "listening"}
+            # Wait until the server has forwarded the client's audio to the session,
+            # before closing the socket (otherwise the check below can race).
+            assert _wait_for(lambda: session.sent), "client audio was never forwarded"
 
     assert session.closed is True
-    assert session.sent
+    assert session.sent[0].get("audio") is not None
 
 
 def test_interrupt_is_forwarded(monkeypatch):
