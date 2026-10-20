@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
-import httpx
 from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -188,7 +187,7 @@ async def upload_recording(call_id: int, request: Request, db: Session = Depends
         call.recording_object_key = object_key
         call.recording_content_type = content_type
         db.commit()
-    except (SQLAlchemyError, RuntimeError, httpx.HTTPError):
+    except (SQLAlchemyError, RuntimeError):
         db.rollback()
         logger.exception("Could not save call recording.")
         raise HTTPException(status_code=503, detail="Recording could not be saved.")

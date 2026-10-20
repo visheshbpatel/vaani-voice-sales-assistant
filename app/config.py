@@ -11,9 +11,6 @@ class Settings(BaseSettings):
     R2_SECRET_ACCESS_KEY: str = ""
     R2_BUCKET_NAME: str = ""
     R2_ENDPOINT_URL: str = ""
-    SUPABASE_URL: str = ""
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
-    SUPABASE_BUCKET_NAME: str = "call-recordings"
     RECORDING_MAX_BYTES: int = 25_000_000
 
 

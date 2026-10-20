@@ -42,6 +42,17 @@
           <dt>Preferred time</dt><dd id="lead-preferred-time">Not collected</dd>
         </dl>
       </section>
+      <section class="history-section" aria-labelledby="history-heading">
+        <div class="section-heading">
+          <h2 id="history-heading">Call history</h2>
+          <button id="refresh-history" class="secondary-button" type="button">
+            Refresh
+          </button>
+        </div>
+        <p id="history-status" class="history-status" aria-live="polite">Loading history...</p>
+        <div id="history-list" class="history-list"></div>
+        <article id="history-detail" class="history-detail" hidden aria-live="polite"></article>
+      </section>
     </main>
     <script src="/static/app.js"></script>
   </body>

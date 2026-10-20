@@ -10,6 +10,10 @@ const leadNameEl = document.getElementById("lead-name");
 const leadCompanyEl = document.getElementById("lead-company");
 const leadContactEl = document.getElementById("lead-contact");
 const leadPreferredTimeEl = document.getElementById("lead-preferred-time");
+const refreshHistoryBtn = document.getElementById("refresh-history");
+const historyStatusEl = document.getElementById("history-status");
+const historyListEl = document.getElementById("history-list");
+const historyDetailEl = document.getElementById("history-detail");
 
 const OUTPUT_RATE = 24000;
 
@@ -40,6 +44,8 @@ let recordingConsentSent = false;
 let customerTranscript = [];
 let leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
 let leadDetailsConfirmed = false;
+let historyCalls = [];
+let selectedHistoryId = null;
 
 function setStatus(value) {
   statusEl.textContent = value;
@@ -67,6 +73,116 @@ function formatDuration(seconds) {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function formatDate(value) {
+  if (!value) return "Start unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Start unavailable" : date.toLocaleString();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function displayStatus(status) {
+  return status || "No Response";
+}
+
+function renderHistoryTranscript(transcript) {
+  if (!Array.isArray(transcript) || !transcript.length) {
+    return "<p class=\"history-empty\">Transcript unavailable.</p>";
+  }
+  return transcript
+    .map((entry) => {
+      const speaker = entry.speaker === "customer" ? "Customer" : "Assistant";
+      return `<p>${escapeHtml(speaker)}: ${escapeHtml(entry.text || "")}</p>`;
+    })
+    .join("");
+}
+
+async function renderHistoryDetail(call) {
+  selectedHistoryId = call.id;
+  historyDetailEl.hidden = false;
+  historyDetailEl.innerHTML = `
+    <h3>Call #${call.id}</h3>
+    <p class="history-meta">Started ${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))} · ${escapeHtml(displayStatus(call.status))}</p>
+    <h4>Summary</h4>
+    <p>${escapeHtml(call.summary || "Summary unavailable.")}</p>
+    <h4>Transcript</h4>
+    <div class="history-transcript">${renderHistoryTranscript(call.transcript)}</div>
+    <h4>Recording</h4>
+    <p id="recording-state">Loading recording...</p>
+  `;
+  renderHistoryList();
+  const recordingState = document.getElementById("recording-state");
+  if (!call.recording_object_key) {
+    recordingState.textContent = "Recording unavailable.";
+    return;
+  }
+  try {
+    const response = await fetch(`/api/calls/${call.id}/recording`);
+    if (!response.ok) throw new Error("recording unavailable");
+    const data = await response.json();
+    const player = document.createElement("audio");
+    player.className = "history-recording";
+    player.controls = true;
+    player.preload = "metadata";
+    player.src = data.url;
+    recordingState.replaceWith(player);
+  } catch (_error) {
+    recordingState.textContent = "Recording unavailable or playback failed.";
+  }
+}
+
+function renderHistoryList() {
+  historyListEl.innerHTML = "";
+  if (!historyCalls.length) {
+    historyListEl.innerHTML = '<p class="history-empty">No calls saved yet.</p>';
+    return;
+  }
+  for (const call of historyCalls) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-item";
+    button.setAttribute("aria-current", String(call.id === selectedHistoryId));
+    button.innerHTML = `
+      <span>
+        <span class="history-item-title">Call #${call.id}</span>
+        <span class="history-item-meta">${formatDate(call.started_at)} · ${formatDuration(Math.round(call.duration_seconds || 0))}</span>
+      </span>
+      <span class="history-item-status">${displayStatus(call.status)}</span>
+    `;
+    button.addEventListener("click", () => renderHistoryDetail(call));
+    historyListEl.appendChild(button);
+  }
+}
+
+async function loadHistory() {
+  historyStatusEl.textContent = "Loading history...";
+  try {
+    const response = await fetch("/api/calls");
+    if (!response.ok) throw new Error("history unavailable");
+    historyCalls = await response.json();
+    historyStatusEl.textContent = historyCalls.length
+      ? `${historyCalls.length} saved call${historyCalls.length === 1 ? "" : "s"}`
+      : "";
+    renderHistoryList();
+    if (selectedHistoryId) {
+      const selected = historyCalls.find((call) => call.id === selectedHistoryId);
+      if (selected) await renderHistoryDetail(selected);
+    }
+  } catch (_error) {
+    historyCalls = [];
+    historyStatusEl.textContent = "Call history is temporarily unavailable.";
+    historyListEl.innerHTML = '<p class="history-error">Could not load saved calls. Try Refresh.</p>';
+    historyDetailEl.hidden = true;
+  }
 }
 
 function setDuration(seconds) {
@@ -619,12 +735,12 @@ async function saveLeadDetails() {
     }
     leadDetails = savedDetails;
     renderLeadDetails();
-    response = await fetch(`/api/calls/${currentCallId}/lead`, {
+    const leadResponse = await fetch(`/api/calls/${currentCallId}/lead`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...savedDetails, consent: true }),
     });
-    if (!response.ok) throw new Error("save failed");
+    if (!leadResponse.ok) throw new Error("save failed");
     setError("");
   } catch (_err) {
     setError("Could not save collected details.");
@@ -633,8 +749,10 @@ async function saveLeadDetails() {
 
 startBtn.addEventListener("click", startCall);
 endBtn.addEventListener("click", endCall);
+refreshHistoryBtn.addEventListener("click", loadHistory);
 transcriptEl.addEventListener("scroll", () => {
   shouldAutoScroll =
     transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 16;
 });
 window.addEventListener("beforeunload", cleanup);
+loadHistory();

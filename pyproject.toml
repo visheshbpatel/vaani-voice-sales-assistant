@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn[standard]==0.54.0",
     "pydantic-settings==2.16.0",
     "google-genai==1.75.0",
+    "boto3>=1.35,<2",
     "pytest>=8.3.5",
     "sqlalchemy>=2.0,<3",
     "alembic>=1.13,<2",
