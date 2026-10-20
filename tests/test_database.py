@@ -3,32 +3,14 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.exc import StatementError
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.database import Base, get_db
 from app.main import app
 from app.models.call import Call
 from app.routes.calls import create_call, finalize_call
 from app.routes.voice import _merge_transcript_text
 from app.services import recording_storage
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    session = sessionmaker(bind=engine, expire_on_commit=False)()
-    try:
-        yield session
-    finally:
-        session.close()
 
 
 def test_call_creation_and_finalize_is_single_row(db_session):
@@ -144,67 +126,43 @@ def test_status_rejects_value_outside_backend_enum(db_session):
 
 def test_history_retrieval_and_lead_patch(db_session):
     call = create_call(db_session)
-
-    def override_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_db
-    try:
-        with TestClient(app) as client:
-            response = client.get("/api/calls")
-            assert response.status_code == 200
-            assert response.json()[0]["id"] == call.id
-            response = client.patch(
-                f"/api/calls/{call.id}/lead",
-                json={
-                    "name": "A prospect",
-                    "company": "Acme",
-                    "contact": "person@example.com",
-                    "preferred_time": "Tomorrow morning",
-                    "consent": True,
-                },
-            )
-            assert response.status_code == 200
-            assert response.json()["lead_company"] == "Acme"
-    finally:
-        app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        response = client.get("/api/calls")
+        assert response.status_code == 200
+        assert response.json()[0]["id"] == call.id
+        response = client.patch(
+            f"/api/calls/{call.id}/lead",
+            json={
+                "name": "A prospect",
+                "company": "Acme",
+                "contact": "person@example.com",
+                "preferred_time": "Tomorrow morning",
+                "consent": True,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["lead_company"] == "Acme"
 
 
 def test_lead_patch_rejects_overlong_input(db_session):
     call = create_call(db_session)
-
-    def override_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_db
-    try:
-        with TestClient(app) as client:
-            response = client.patch(
-                f"/api/calls/{call.id}/lead",
-                json={"name": "x" * 121},
-            )
-        assert response.status_code == 422
-    finally:
-        app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/calls/{call.id}/lead",
+            json={"name": "x" * 121},
+        )
+    assert response.status_code == 422
 
 
 def test_recording_requires_consent(db_session):
     call = create_call(db_session)
-
-    def override_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_db
-    try:
-        with TestClient(app) as client:
-            response = client.put(
-                f"/api/calls/{call.id}/recording",
-                content=b"audio",
-                headers={"content-type": "audio/webm"},
-            )
-        assert response.status_code == 400
-    finally:
-        app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        response = client.put(
+            f"/api/calls/{call.id}/recording",
+            content=b"audio",
+            headers={"content-type": "audio/webm"},
+        )
+    assert response.status_code == 400
 
 
 def test_local_recording_key_supports_playback(tmp_path, monkeypatch):

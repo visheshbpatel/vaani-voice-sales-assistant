@@ -4,11 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from app.database import Base
+from sqlalchemy import select
 from app.main import app
 from app.models.call import Call
 from app.routes import voice as voice_route
@@ -498,16 +494,7 @@ def test_duplicate_session_rejected(monkeypatch):
                 }
 
 
-def test_call_end_persists_browser_lead_details(monkeypatch):
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    test_session = sessionmaker(bind=engine, expire_on_commit=False)
-    monkeypatch.setattr(voice_route, "SessionLocal", test_session)
-
+def test_call_end_persists_browser_lead_details(db_session, monkeypatch):
     session = FakeSession([], hang=asyncio.Event())
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
     details = {
@@ -523,13 +510,12 @@ def test_call_end_persists_browser_lead_details(monkeypatch):
             ws.send_json({"type": "lead_details", "value": details})
             ws.send_json({"type": "end"})
 
-    with test_session() as db:
-        calls = list(db.scalars(select(Call)))
-        assert len(calls) == 1
-        call = calls[0]
-        assert call.ended_at is not None
-        assert call.lead_name == details["name"]
-        assert call.lead_company == details["company"]
-        assert call.lead_contact == details["contact"]
-        assert call.lead_preferred_time == details["preferred_time"]
-        assert call.lead_contact_consent is True
+    calls = list(db_session.scalars(select(Call)))
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.ended_at is not None
+    assert call.lead_name == details["name"]
+    assert call.lead_company == details["company"]
+    assert call.lead_contact == details["contact"]
+    assert call.lead_preferred_time == details["preferred_time"]
+    assert call.lead_contact_consent is True

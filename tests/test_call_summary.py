@@ -3,30 +3,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from app.database import Base, get_db
 from app.main import app
 from app.models.call import CallStatus, SummaryGenerationStatus
 from app.routes.calls import create_call, generate_call_summary
 from app.services import call_summary
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    session = sessionmaker(bind=engine, expire_on_commit=False)()
-    try:
-        yield session
-    finally:
-        session.close()
 
 
 def _valid_summary() -> dict:
@@ -91,19 +71,12 @@ def test_retry_updates_same_record(db_session, monkeypatch):
         lambda transcript: call_summary.CallSummary.model_validate(_valid_summary()),
     )
 
-    def override_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_db
-    try:
-        with TestClient(app) as client:
-            response = client.post(f"/api/calls/{call.id}/summary/retry")
-        assert response.status_code == 200
-        assert response.json()["id"] == call.id
-        assert response.json()["status"] == "Interested"
-        assert response.json()["summary_generation_status"] == "completed"
-    finally:
-        app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        response = client.post(f"/api/calls/{call.id}/summary/retry")
+    assert response.status_code == 200
+    assert response.json()["id"] == call.id
+    assert response.json()["status"] == "Interested"
+    assert response.json()["summary_generation_status"] == "completed"
 
 
 def test_status_schema_rejects_unknown_value():
