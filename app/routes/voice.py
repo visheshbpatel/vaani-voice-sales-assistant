@@ -1,19 +1,23 @@
 import asyncio
 import logging
-from urllib.parse import urlsplit
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, WebSocket
 from sqlalchemy.exc import SQLAlchemyError
-from starlette.websockets import WebSocketDisconnect, WebSocketDisconnected, WebSocketState
+from starlette.websockets import (
+    WebSocketDisconnect,
+    WebSocketDisconnected,
+    WebSocketState,
+)
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.call import Call
 from app.routes.calls import create_call, finalize_call, generate_call_summary
-from app.services.gemini_live import run_live_bridge
-from app.config import settings
 from app.security import make_call_token
+from app.services.gemini_live import run_live_bridge
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -138,7 +142,7 @@ async def voice_socket(websocket: WebSocket) -> None:
             active_entry = {
                 "speaker": speaker,
                 "text": text.strip(),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
             transcript.append(active_entry)
         else:

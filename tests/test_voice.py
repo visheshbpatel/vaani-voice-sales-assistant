@@ -6,14 +6,15 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-from sqlalchemy import select
+
+from app.config import settings
 from app.main import app
-from app.models.call import Call
 from app.routes import voice as voice_route
+from app.security import make_call_token
 from app.services import gemini_live
 from app.services.product_knowledge import GREETING_TRIGGER, IDLE_NUDGE_TRIGGER
-from app.config import settings
-from app.security import make_call_token
+
+
 class FakeSession:
     def __init__(
         self,
@@ -169,18 +170,17 @@ def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
 
     monkeypatch.setattr(gemini_live, "live_connect", fake_connect)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            assert ws.receive_json() == {"type": "status", "value": "connecting"}
-            assert ws.receive_json()["type"] == "call_started"
-            assert ws.receive_json() == {"type": "status", "value": "listening"}
-            ws.send_bytes(b"\x00\x00" * 160)
-            assert ws.receive_json() == {"type": "status", "value": "speaking"}
-            assert ws.receive_bytes() == b"\x00\x00" * 24
-            assert ws.receive_json() == {"type": "status", "value": "listening"}
-            # Wait until the server has forwarded the client's audio to the session,
-            # before closing the socket (otherwise the check below can race).
-            assert _wait_for(lambda: session.sent), "client audio was never forwarded"
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        assert ws.receive_json() == {"type": "status", "value": "connecting"}
+        assert ws.receive_json()["type"] == "call_started"
+        assert ws.receive_json() == {"type": "status", "value": "listening"}
+        ws.send_bytes(b"\x00\x00" * 160)
+        assert ws.receive_json() == {"type": "status", "value": "speaking"}
+        assert ws.receive_bytes() == b"\x00\x00" * 24
+        assert ws.receive_json() == {"type": "status", "value": "listening"}
+        # Wait until the server has forwarded the client's audio to the session,
+        # before closing the socket (otherwise the check below can race).
+        assert _wait_for(lambda: session.sent), "client audio was never forwarded"
 
     assert session.closed is True
     assert session.sent[0] == {"text": GREETING_TRIGGER}
@@ -190,11 +190,10 @@ def test_live_loop_sends_audio_and_cleans_up(monkeypatch):
 def test_call_started_includes_hmac_token(monkeypatch):
     session = FakeSession([])
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            assert ws.receive_json()["type"] == "status"
-            started = ws.receive_json()
-            assert started["token"] == make_call_token(started["call_id"])
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        assert ws.receive_json()["type"] == "status"
+        started = ws.receive_json()
+        assert started["token"] == make_call_token(started["call_id"])
 
 
 def test_async_recording_consent_callback_is_awaited():
@@ -252,25 +251,23 @@ def test_call_timeout_sends_fatal_error_and_finalizes(monkeypatch):
 
     monkeypatch.setattr(settings, "MAX_CALL_SECONDS", 0.01)
     monkeypatch.setattr(voice_route, "run_live_bridge", slow_bridge)
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            assert ws.receive_json()["type"] == "status"
-            assert ws.receive_json()["type"] == "call_started"
-            assert ws.receive_json() == {
-                "type": "error",
-                "message": "The call reached the maximum length and was ended.",
-                "fatal": True,
-            }
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        assert ws.receive_json()["type"] == "status"
+        assert ws.receive_json()["type"] == "call_started"
+        assert ws.receive_json() == {
+            "type": "error",
+            "message": "The call reached the maximum length and was ended.",
+            "fatal": True,
+        }
 
 
 def test_interrupt_is_forwarded(monkeypatch):
     session = FakeSession([_interrupt_event()])
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            _receive_startup(ws)
-            assert ws.receive_json() == {"type": "interrupted"}
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        _receive_startup(ws)
+        assert ws.receive_json() == {"type": "interrupted"}
 
 
 def test_transcript_forwards_partial_and_final_turns(monkeypatch):
@@ -284,10 +281,9 @@ def test_transcript_forwards_partial_and_final_turns(monkeypatch):
     )
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            _receive_startup(ws)
-            messages = [ws.receive_json() for _ in range(4)]
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        _receive_startup(ws)
+        messages = [ws.receive_json() for _ in range(4)]
 
     assert messages == [
         {
@@ -328,10 +324,9 @@ def test_transcript_fragments_preserve_speaker_order(monkeypatch):
     )
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            _receive_startup(ws)
-            messages = [ws.receive_json() for _ in range(4)]
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        _receive_startup(ws)
+        messages = [ws.receive_json() for _ in range(4)]
 
     assert [(message["speaker"], message["text"], message["partial"]) for message in messages] == [
         ("customer", "Acme", True),
@@ -483,23 +478,22 @@ def test_receive_loop_forwards_multiple_turns_and_stays_open(monkeypatch):
     )
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            _receive_startup(ws)
-            assert ws.receive_json() == {"type": "status", "value": "speaking"}
-            assert ws.receive_bytes() == b"\x01\x00" * 8
-            assert ws.receive_json() == {"type": "status", "value": "listening"}
-            assert _receive_until(ws, "status") == {
-                "type": "status",
-                "value": "speaking",
-            }
-            assert ws.receive_bytes() == b"\x02\x00" * 8
-            assert _receive_until(ws, "status") == {
-                "type": "status",
-                "value": "listening",
-            }
-            assert session.closed is False
-            ws.send_json({"type": "end"})
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        _receive_startup(ws)
+        assert ws.receive_json() == {"type": "status", "value": "speaking"}
+        assert ws.receive_bytes() == b"\x01\x00" * 8
+        assert ws.receive_json() == {"type": "status", "value": "listening"}
+        assert _receive_until(ws, "status") == {
+            "type": "status",
+            "value": "speaking",
+        }
+        assert ws.receive_bytes() == b"\x02\x00" * 8
+        assert _receive_until(ws, "status") == {
+            "type": "status",
+            "value": "listening",
+        }
+        assert session.closed is False
+        ws.send_json({"type": "end"})
 
     assert session.closed is True
 
@@ -512,10 +506,9 @@ def test_kickoff_is_sent_once_and_not_as_customer_transcript(monkeypatch):
     )
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            _receive_startup(ws)
-            transcript = ws.receive_json()
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as ws:
+        _receive_startup(ws)
+        transcript = ws.receive_json()
 
     assert session.sent == [{"text": GREETING_TRIGGER}]
     assert transcript["speaker"] == "assistant"
@@ -588,12 +581,11 @@ def test_duplicate_session_rejected(monkeypatch):
     session = FakeSession([], hang=hang)
     monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as first:
-            _receive_startup(first)
-            with client.websocket_connect("/ws/voice") as second:
-                payload = second.receive_json()
-                assert payload == {
-                    "type": "error",
-                    "message": "A call is already in progress.",
-                }
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as first:
+        _receive_startup(first)
+        with client.websocket_connect("/ws/voice") as second:
+            payload = second.receive_json()
+            assert payload == {
+                "type": "error",
+                "message": "A call is already in progress.",
+            }

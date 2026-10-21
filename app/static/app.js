@@ -22,8 +22,8 @@ const historyUnlockEl = document.getElementById("history-unlock");
 const historyPasswordEl = document.getElementById("history-password");
 const historyUnlockButton = document.getElementById("history-unlock-button");
 
+// State
 const OUTPUT_RATE = 24000;
-
 let ws = null;
 let captureCtx = null;
 let playbackCtx = null;
@@ -33,9 +33,7 @@ let sourceNode = null;
 let nextPlayTime = 0;
 let activeSources = [];
 let playGeneration = 0;
-let starting = false;
 let callPhase = "idle";
-let transcriptEntries = new Map();
 let activeTranscriptEntry = null;
 let activeTranscriptSpeaker = null;
 let shouldAutoScroll = true;
@@ -50,7 +48,6 @@ let recordingUploadPromise = null;
 let recordingConsentSent = false;
 let recordingCallId = null;
 let recordingCallToken = null;
-let leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
 let callToken = null;
 let finishTimer = null;
 let summaryPollTimer = null;
@@ -69,6 +66,28 @@ function apiHeaders(extra = {}) {
   return headers;
 }
 
+async function requestJson(url, options = {}, fallbackMessage = "Request failed.") {
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (_error) {
+    throw new Error("Could not connect to the server.");
+  }
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    const error = new Error(payload.detail || fallbackMessage);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+// Shared UI helpers
 function setStatus(value) {
   statusEl.textContent = value;
 }
@@ -89,6 +108,8 @@ function setError(message) {
   }
   errorEl.hidden = false;
   errorEl.textContent = message;
+  errorEl.classList.remove("error-toast-visible");
+  requestAnimationFrame(() => errorEl.classList.add("error-toast-visible"));
 }
 
 function formatDuration(seconds) {
@@ -100,7 +121,12 @@ function formatDuration(seconds) {
 function formatDate(value) {
   if (!value) return "Start unavailable";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Start unavailable" : date.toLocaleString();
+  return Number.isNaN(date.getTime())
+    ? "Start unavailable"
+    : date.toLocaleString([], {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
 }
 
 function escapeHtml(value) {
@@ -119,6 +145,15 @@ function displayStatus(call) {
   return "Summary pending";
 }
 
+function statusClass(status) {
+  return `status-${String(status).toLowerCase().replaceAll(" ", "-")}`;
+}
+
+function renderStatusBadge(status) {
+  return `<span class="badge ${statusClass(status)}">${escapeHtml(status)}</span>`;
+}
+
+// History
 function renderHistoryTranscript(transcript) {
   if (!Array.isArray(transcript) || !transcript.length) {
     return "<p class=\"history-empty\">Transcript unavailable.</p>";
@@ -160,6 +195,7 @@ function renderSummary(summary) {
     .join("");
 }
 
+// Result panel
 function retryButton(callId) {
   return `<button type="button" class="retry-summary" data-call-id="${escapeHtml(callId)}">Retry summary</button>`;
 }
@@ -173,20 +209,18 @@ function bindRetryButtons(container) {
 async function retrySummary(callId, button) {
   button.disabled = true;
   try {
-    const response = await fetch(`/api/calls/${callId}/summary/retry`, {
+    const call = await requestJson(`/api/calls/${callId}/summary/retry`, {
       method: "POST",
       headers: apiHeaders(),
-    });
-    if (response.status === 401) {
-      clearHistoryPassword();
-      throw new Error("history password rejected");
-    }
-    if (!response.ok) throw new Error("retry failed");
-    const call = await response.json();
+    }, "Could not retry the summary.");
     if (String(callId) === String(currentCallId)) renderResult(call);
     if (String(selectedHistoryId) === String(callId)) await renderHistoryDetail(call);
-  } catch (_error) {
-    setError("Could not retry the summary.");
+  } catch (error) {
+    if (error.status === 401) {
+      clearHistoryPassword();
+      error.message = "History password rejected.";
+    }
+    setError(error.message);
     button.disabled = false;
   }
 }
@@ -210,11 +244,15 @@ function renderResult(call) {
   if (!call || !call.id) return;
   const summaryStatus = call.summary_generation_status || "pending";
   resultEl.hidden = false;
+  const summaryContent = summaryStatus === "completed"
+    ? renderSummary(call.summary_data)
+    : summaryStatus === "failed"
+      ? `<p>Summary generation failed.</p>${retryButton(call.id)}`
+      : '<p class="summary-loading"><span class="spinner" aria-hidden="true"></span>Generating summary...</p>';
   resultEl.innerHTML = `
     <h2>Call result</h2>
-    <p><span class="badge">${escapeHtml(displayStatus(call))}</span></p>
-    ${summaryStatus === "completed" ? renderSummary(call.summary_data) :
-      `<p>${summaryStatus === "failed" ? "Summary generation failed." : "Summary is still being generated."}</p>${retryButton(call.id)}`}
+    <p>${renderStatusBadge(displayStatus(call))}</p>
+    ${summaryContent}
   `;
   bindRetryButtons(resultEl);
   renderLeadForm(call);
@@ -223,22 +261,34 @@ function renderResult(call) {
 async function pollSummary(callId) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      const response = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
-      if (!response.ok) throw new Error("call unavailable");
-      const call = await response.json();
+      const call = await requestJson(
+        `/api/calls/${callId}`,
+        { headers: apiHeaders() },
+        "Could not load the call result.",
+      );
       renderResult(call);
       if (call.summary_generation_status !== "pending") return;
-    } catch (_error) {
+    } catch (error) {
       resultEl.hidden = false;
-      resultEl.innerHTML = "<p>Could not load the call result.</p>";
+      resultEl.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+      setError(error.message);
       return;
     }
     await new Promise((resolve) => {
       summaryPollTimer = setTimeout(resolve, 2000);
     });
   }
-  const response = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
-  if (response.ok) renderResult(await response.json());
+  try {
+    renderResult(await requestJson(
+      `/api/calls/${callId}`,
+      { headers: apiHeaders() },
+      "Could not load the call result.",
+    ));
+  } catch (error) {
+    resultEl.hidden = false;
+    resultEl.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+    setError(error.message);
+  }
 }
 
 async function renderHistoryDetail(call) {
@@ -246,7 +296,8 @@ async function renderHistoryDetail(call) {
   historyDetailEl.hidden = false;
   historyDetailEl.innerHTML = `
     <h3>Call #${call.id}</h3>
-    <p class="history-meta">Started ${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))} · ${escapeHtml(displayStatus(call))}</p>
+    <p class="history-meta">Started ${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))}</p>
+    <p>${renderStatusBadge(displayStatus(call))}</p>
     <h4>Summary</h4>
     <div>${renderSummary(call.summary_data)}</div>
     ${call.summary_generation_status !== "completed" ? retryButton(call.id) : ""}
@@ -265,24 +316,27 @@ async function renderHistoryDetail(call) {
     return;
   }
   try {
-    const response = await fetch(`/api/calls/${call.id}/recording`, { headers: apiHeaders() });
-    if (!response.ok) throw new Error("recording unavailable");
-    const data = await response.json();
+    const data = await requestJson(
+      `/api/calls/${call.id}/recording`,
+      { headers: apiHeaders() },
+      "Recording unavailable or playback failed.",
+    );
     const player = document.createElement("audio");
     player.className = "history-recording";
     player.controls = true;
     player.preload = "metadata";
     player.src = data.url;
     recordingState.replaceWith(player);
-  } catch (_error) {
-    recordingState.textContent = "Recording unavailable or playback failed.";
+  } catch (error) {
+    recordingState.textContent = error.message;
+    setError(error.message);
   }
 }
 
 function renderHistoryList() {
   historyListEl.innerHTML = "";
   if (!historyCalls.length) {
-    historyListEl.innerHTML = '<p class="history-empty">No calls saved yet.</p>';
+    historyListEl.innerHTML = '<p class="history-empty">No calls yet</p>';
     return;
   }
   for (const call of historyCalls) {
@@ -295,7 +349,7 @@ function renderHistoryList() {
         <span class="history-item-title">Call #${escapeHtml(call.id)}</span>
         <span class="history-item-meta">${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))}</span>
       </span>
-      <span class="history-item-status">${escapeHtml(displayStatus(call))}</span>
+      <span class="history-item-status">${renderStatusBadge(displayStatus(call))}</span>
     `;
     button.addEventListener("click", () => selectHistoryCall(call.id));
     historyListEl.appendChild(button);
@@ -305,16 +359,15 @@ function renderHistoryList() {
 async function loadHistory() {
   historyStatusEl.textContent = "Loading history...";
   try {
-    const response = await fetch("/api/calls?limit=50", { headers: apiHeaders() });
-    if (response.status === 401) {
-      clearHistoryPassword();
-      historyUnlockEl.hidden = false;
-      historyStatusEl.textContent = "";
-      return;
+    historyCalls = await requestJson(
+      "/api/calls?limit=50",
+      { headers: apiHeaders() },
+      "Call history is temporarily unavailable.",
+    );
+    if (!Array.isArray(historyCalls)) {
+      throw new Error("Call history returned an invalid response.");
     }
-    if (!response.ok) throw new Error("history unavailable");
     historyUnlockEl.hidden = true;
-    historyCalls = await response.json();
     historyStatusEl.textContent = historyCalls.length
       ? `${historyCalls.length} saved call${historyCalls.length === 1 ? "" : "s"}`
       : "";
@@ -323,24 +376,35 @@ async function loadHistory() {
       const selected = historyCalls.find((call) => call.id === selectedHistoryId);
       if (selected) await selectHistoryCall(selected.id);
     }
-  } catch (_error) {
+  } catch (error) {
+    if (error.status === 401) {
+      clearHistoryPassword();
+      historyUnlockEl.hidden = false;
+      historyStatusEl.textContent = "";
+      return;
+    }
     historyCalls = [];
-    historyStatusEl.textContent = "Call history is temporarily unavailable.";
-    historyListEl.innerHTML = '<p class="history-error">Could not load saved calls. Try Refresh.</p>';
+    historyStatusEl.textContent = error.message;
+    historyListEl.innerHTML = `<p class="history-error">${escapeHtml(error.message)} Try Refresh.</p>`;
+    setError(error.message);
     historyDetailEl.hidden = true;
   }
 
   async function selectHistoryCall(callId) {
     try {
-      const response = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
-      if (response.status === 401) {
+      const call = await requestJson(
+        `/api/calls/${callId}`,
+        { headers: apiHeaders() },
+        "Could not load this call.",
+      );
+      await renderHistoryDetail(call);
+    } catch (error) {
+      if (error.status === 401) {
         clearHistoryPassword();
         return;
       }
-      if (!response.ok) throw new Error("call unavailable");
-      await renderHistoryDetail(await response.json());
-    } catch (_error) {
-      historyDetailEl.textContent = "Could not load this call.";
+      historyDetailEl.textContent = error.message;
+      setError(error.message);
     }
   }
 
@@ -358,14 +422,14 @@ function setDuration(seconds) {
   durationEl.textContent = formatDuration(seconds);
 }
 
+// Audio capture
 function clearTranscript() {
-  transcriptEntries = new Map();
   activeTranscriptEntry = null;
   activeTranscriptSpeaker = null;
   transcriptEl.innerHTML = "";
   const empty = document.createElement("p");
   empty.className = "transcript-empty";
-  empty.textContent = "Transcript will appear here when available.";
+  empty.textContent = "Press Start Call and say hello to Vaani";
   transcriptEl.appendChild(empty);
 }
 
@@ -425,7 +489,7 @@ function addTranscriptMessage(speaker, text, partial) {
 }
 
 function showTranscriptUnavailable(message) {
-  if (transcriptEntries.size || transcriptEl.querySelector(".transcript-message")) {
+  if (transcriptEl.querySelector(".transcript-message")) {
     return;
   }
   transcriptEl.innerHTML = "";
@@ -452,6 +516,7 @@ function micErrorMessage(err) {
   return `Could not initialize the call audio: ${err?.message || "unknown browser error"}`;
 }
 
+// Playback
 function stopPlayback() {
   playGeneration += 1;
   nextPlayTime = 0;
@@ -513,6 +578,7 @@ function enqueuePcm16(pcmBuffer) {
   activeSources.push(source);
 }
 
+// Websocket
 function cleanup(closeSocket = true) {
   stopPlayback();
   if (ws && closeSocket) {
@@ -554,7 +620,6 @@ function cleanup(closeSocket = true) {
   }
   recordingDestination = null;
   recorder = null;
-  starting = false;
 }
 
 function finishCall() {
@@ -662,12 +727,12 @@ function handleSocketMessage(event) {
   }
 }
 
+// Call flow
 async function startCall() {
   if (callPhase !== "idle") {
     return;
   }
   callPhase = "active";
-  starting = true;
   setError("");
   setStatus("connecting");
   setDuration(0);
@@ -682,7 +747,6 @@ async function startCall() {
   recordingCallToken = null;
   recordingUploadPromise = null;
   recordingConsentSent = false;
-  leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
   followUpEl.hidden = true;
   resultEl.hidden = true;
   startBtn.disabled = true;
@@ -756,7 +820,6 @@ async function startCall() {
         setError("This browser cannot record in a supported audio format. The call can continue without recording.");
       }
     }
-    starting = false;
   } catch (err) {
     setError(micErrorMessage(err));
     endCall();
@@ -770,20 +833,16 @@ async function uploadRecording() {
     return;
   }
   try {
-    const response = await fetch(`/api/calls/${recordingCallId}/recording`, {
+    await requestJson(`/api/calls/${recordingCallId}/recording`, {
       method: "PUT",
       headers: {
         "Content-Type": recordingType,
         ...(recordingCallToken ? { "X-Call-Token": recordingCallToken } : {}),
       },
       body: new Blob(recordingChunks, { type: recordingType }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "upload failed");
-    }
-  } catch (_err) {
-    setError("The call ended, but its recording could not be saved.");
+    }, "The recording could not be saved.");
+  } catch (error) {
+    setError(`The call ended, but its recording could not be saved: ${error.message}`);
   }
 }
 
@@ -805,20 +864,17 @@ leadForm.addEventListener("submit", async (event) => {
     return [field, value || null];
   }));
   try {
-    const response = await fetch(`/api/calls/${currentCallId}/lead`, {
+    await requestJson(`/api/calls/${currentCallId}/lead`, {
       method: "PATCH",
       headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ ...details, consent: leadContactConsent.checked }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "Could not save follow-up details.");
-    }
+    }, "Could not save follow-up details.");
     setError("");
   } catch (error) {
     setError(error.message);
   }
 });
+
 historyUnlockButton.addEventListener("click", () => {
   try {
     sessionStorage.setItem("historyPassword", historyPasswordEl.value);

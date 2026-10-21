@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import database
 from app.database import Base, get_db
+from app.config import settings
 from app.main import app
 from app.models.call import CallStatus
 from app.routes import calls as calls_route
@@ -15,7 +16,29 @@ from app.services.call_summary import CallSummary
 
 
 @pytest.fixture(autouse=True)
-def isolated_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def isolated_settings(monkeypatch: pytest.MonkeyPatch):
+    test_settings = {
+        "HISTORY_PASSWORD": "",
+        "STORAGE_ENDPOINT_URL": "",
+        "STORAGE_REGION": "",
+        "STORAGE_ACCESS_KEY_ID": "",
+        "STORAGE_SECRET_ACCESS_KEY": "",
+        "STORAGE_BUCKET_NAME": "",
+        "ALLOW_LOCAL_RECORDINGS": True,
+        "APP_SECRET": "test-app-secret",
+        "ALLOWED_ORIGINS": "",
+        "DATABASE_URL": "sqlite:///:memory:",
+    }
+    for name, value in test_settings.items():
+        monkeypatch.setattr(settings, name, value)
+
+
+@pytest.fixture(autouse=True)
+def isolated_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_settings,
+):
     database_path = (tmp_path / "test.db").resolve()
     engine = create_engine(
         f"sqlite:///{database_path}",

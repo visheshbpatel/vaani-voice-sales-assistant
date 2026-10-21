@@ -255,7 +255,7 @@ async def _gemini_to_browser(
             nudge_task.cancel()
             await asyncio.gather(nudge_task, return_exceptions=True)
         stop.set()
-    return "session_closed"
+
 
 async def _idle_nudge_loop(
     session,
@@ -282,7 +282,7 @@ async def _idle_nudge_loop(
         if stop.is_set():
             return
         await asyncio.wait_for(caller_spoke.wait(), timeout=IDLE_NUDGE_SECONDS)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         if (
             not stop.is_set()
             and nudge_state["count"] < MAX_CONSECUTIVE_NUDGES
@@ -399,6 +399,6 @@ async def _duration_loop(
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=1)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if not stop.is_set():
                 await _send_duration(websocket, started_at, stop)

@@ -4,8 +4,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routes.voice import router as voice_router
 from app.routes.calls import router as calls_router
+from app.routes.voice import router as voice_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 

@@ -36,3 +36,8 @@ app = ["static/*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.1",
+]

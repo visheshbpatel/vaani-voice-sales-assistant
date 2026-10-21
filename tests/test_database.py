@@ -1,19 +1,19 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import StatementError
 
+from app import database
+from app.config import settings
 from app.main import app
 from app.models.call import Call, SummaryGenerationStatus
 from app.routes.calls import create_call, finalize_call
-from app.services import recording_storage
-from app import database
-from app.config import settings
-from app.security import make_call_token
 from app.schemas.call import LeadUpdate
+from app.security import make_call_token
+from app.services import recording_storage
 
 
 def test_database_url_normalizes_postgres_and_default_path(monkeypatch):
@@ -25,7 +25,7 @@ def test_database_url_normalizes_postgres_and_default_path(monkeypatch):
 
 
 def test_call_creation_and_finalize_is_single_row(db_session):
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     call = create_call(db_session)
     finalize_call(
         db_session,
@@ -50,7 +50,7 @@ def test_finalize_does_not_generate_summary(db_session, monkeypatch):
 
 
 def test_finalize_does_not_touch_lead_details(db_session):
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     call = Call(
         started_at=started,
         lead_name="Existing Name",
@@ -105,7 +105,7 @@ def test_lead_update_requires_consent_for_details():
 
 
 def test_status_rejects_value_outside_backend_enum(db_session):
-    call = Call(started_at=datetime.now(timezone.utc), status="Unknown")
+    call = Call(started_at=datetime.now(UTC), status="Unknown")
     db_session.add(call)
     with pytest.raises(StatementError):
         db_session.commit()
@@ -283,7 +283,7 @@ def test_history_has_parsed_summary_and_utc_datetimes(db_session):
     call = create_call(db_session)
     call.summary = '{"interest":"Interested"}'
     call.summary_generation_status = SummaryGenerationStatus.COMPLETED
-    call.ended_at = datetime.now(timezone.utc)
+    call.ended_at = datetime.now(UTC)
     db_session.commit()
 
     with TestClient(app) as client:

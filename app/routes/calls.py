@@ -1,24 +1,24 @@
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.database import get_db
-from app.models.call import Call, CallStatus, SummaryGenerationStatus
-from app.schemas.call import CallHistory, CallListItem, LeadUpdate
-from app.services.recording_storage import save_recording, signed_recording_url
 from app.config import settings
+from app.database import get_db
+from app.models.call import Call, SummaryGenerationStatus
+from app.schemas.call import CallHistory, CallListItem, LeadUpdate
 from app.security import require_history_access, valid_call_token, valid_password
 from app.services.call_summary import (
     SummaryGenerationError,
     generate_summary,
     summary_json,
 )
+from app.services.recording_storage import save_recording, signed_recording_url
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 logger = logging.getLogger(__name__)
@@ -220,7 +220,7 @@ async def get_recording_url(
 
 
 def create_call(db: Session) -> Call:
-    call = Call(started_at=datetime.now(timezone.utc))
+    call = Call(started_at=datetime.now(UTC))
     db.add(call)
     db.commit()
     db.refresh(call)
@@ -236,10 +236,10 @@ def finalize_call(
     call = db.get(Call, call_id)
     if call is None:
         return
-    ended_at = datetime.now(timezone.utc)
+    ended_at = datetime.now(UTC)
     stored_started_at = call.started_at
     if stored_started_at.tzinfo is None:
-        stored_started_at = stored_started_at.replace(tzinfo=timezone.utc)
+        stored_started_at = stored_started_at.replace(tzinfo=UTC)
     call.ended_at = ended_at
     call.duration_seconds = max(0, (ended_at - stored_started_at).total_seconds())
     call.transcript = transcript

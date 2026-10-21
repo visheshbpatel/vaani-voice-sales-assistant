@@ -3,11 +3,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+
 from app.main import app
 from app.models.call import CallStatus, SummaryGenerationStatus
 from app.routes.calls import create_call, finalize_call, generate_call_summary
-from app.services import call_summary
 from app.security import make_call_token
+from app.services import call_summary
 
 
 def _valid_summary() -> dict:
