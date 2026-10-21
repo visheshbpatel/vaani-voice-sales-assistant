@@ -153,6 +153,11 @@ def test_recording_upload_normalizes_type_rejects_duplicate_and_size(
         "X-Call-Token": make_call_token(call.id),
     }
     with TestClient(app) as client:
+        invalid_length = client.put(
+            f"/api/calls/{call.id}/recording",
+            content=b"123",
+            headers={**headers, "content-length": "not-a-number"},
+        )
         response = client.put(
             f"/api/calls/{call.id}/recording", content=b"123", headers=headers
         )
@@ -170,6 +175,7 @@ def test_recording_upload_normalizes_type_rejects_duplicate_and_size(
                 "X-Call-Token": make_call_token(oversized_call.id),
             },
         )
+    assert invalid_length.status_code == 400
     assert response.status_code == 200
     assert response.json()["content_type"] == "audio/webm"
     assert duplicate.status_code == 409
@@ -289,3 +295,9 @@ def test_local_recording_key_supports_playback(tmp_path, monkeypatch):
     assert asyncio.run(recording_storage.signed_recording_url(object_key)) == (
         f"/api/calls/local/{object_key}"
     )
+
+
+def test_local_recording_playback_rejects_missing_object(tmp_path, monkeypatch):
+    monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", tmp_path)
+    with pytest.raises(RuntimeError, match="playback"):
+        asyncio.run(recording_storage.signed_recording_url("call-7/missing.webm"))

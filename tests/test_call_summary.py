@@ -60,7 +60,7 @@ def test_empty_transcript_does_not_call_model(monkeypatch):
     assert summary.status is CallStatus.NO_RESPONSE
 
 
-def test_summary_client_uses_fast_generation_settings(monkeypatch):
+def test_summary_client_uses_supported_generation_settings(monkeypatch):
     captured = {}
 
     class FakeModels:
@@ -84,7 +84,7 @@ def test_summary_client_uses_fast_generation_settings(monkeypatch):
     assert captured["http_options"].timeout == 90000
     assert captured["config"].max_output_tokens == 1500
     assert captured["config"].temperature == 0.2
-    assert captured["config"].thinking_config.thinking_level.value == "MINIMAL"
+    assert captured["config"].thinking_config is None
 
 
 def test_summary_retries_server_error_once(monkeypatch):
@@ -109,13 +109,70 @@ def test_summary_retries_server_error_once(monkeypatch):
 
     monkeypatch.setattr(call_summary.settings, "GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(call_summary.genai, "Client", FakeClient)
+    monkeypatch.setattr(call_summary.time, "sleep", lambda _delay: None)
 
     summary = call_summary.generate_summary(
-        [{"speaker": "customer", "text": "Hello"}]
+        [{"speaker": "customer", "text": "I am interested"}]
     )
 
     assert summary.status is CallStatus.INTERESTED
     assert attempts == 2
+
+
+def test_summary_retries_transient_503_until_exhausted(monkeypatch):
+    attempts = 0
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise call_summary.errors.ServerError(
+                503, {"error": {"message": "high demand"}}
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.models = FakeModels()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(call_summary.settings, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(call_summary.genai, "Client", FakeClient)
+    monkeypatch.setattr(call_summary.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(call_summary.SummaryGenerationError):
+        call_summary.generate_summary([{"speaker": "customer", "text": "Hello"}])
+
+    assert attempts == call_summary.SUMMARY_MAX_ATTEMPTS
+
+
+def test_summary_does_not_retry_permanent_400(monkeypatch):
+    attempts = 0
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise call_summary.errors.APIError(
+                400, {"error": {"message": "invalid request"}}
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.models = FakeModels()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(call_summary.settings, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(call_summary.genai, "Client", FakeClient)
+    monkeypatch.setattr(call_summary.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(call_summary.SummaryGenerationError):
+        call_summary.generate_summary([{"speaker": "customer", "text": "Hello"}])
+
+    assert attempts == 1
 
 
 def test_generation_failure_marks_record_failed(db_session, monkeypatch):
@@ -186,3 +243,17 @@ def test_status_schema_rejects_unknown_value():
         call_summary.CallSummary.model_validate(
             {**_valid_summary(), "status": "Maybe"}
         )
+
+
+def test_status_does_not_use_assistant_only_interest():
+    summary = call_summary.CallSummary.model_validate(_valid_summary())
+
+    guarded = call_summary._conservative_status(
+        summary,
+        [
+            {"speaker": "assistant", "text": "The customer sounds interested."},
+            {"speaker": "customer", "text": "I need to think about it."},
+        ],
+    )
+
+    assert guarded.status is CallStatus.FOLLOW_UP_REQUIRED

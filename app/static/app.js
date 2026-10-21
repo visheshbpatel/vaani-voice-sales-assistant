@@ -43,8 +43,10 @@ let recordingCallToken = null;
 let callToken = null;
 let finishTimer = null;
 let summaryPollTimer = null;
+let callGeneration = 0;
 let historyCalls = [];
 let selectedHistoryId = null;
+const RECORDING_UPLOAD_TIMEOUT_MS = 8000;
 
 function apiHeaders(extra = {}) {
   const headers = { ...extra };
@@ -62,7 +64,8 @@ async function requestJson(url, options = {}, fallbackMessage = "Request failed.
   let response;
   try {
     response = await fetch(url, options);
-  } catch (_error) {
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
     throw new Error("Could not connect to the server.");
   }
   let payload = {};
@@ -196,6 +199,33 @@ function bindRetryButtons(container) {
   container.querySelectorAll(".retry-summary").forEach((button) => {
     button.addEventListener("click", () => retrySummary(button.dataset.callId, button));
   });
+}
+
+async function selectHistoryCall(callId) {
+  try {
+    const call = await requestJson(
+      `/api/calls/${callId}`,
+      { headers: apiHeaders() },
+      "Could not load this call.",
+    );
+    await renderHistoryDetail(call);
+  } catch (error) {
+    if (error.status === 401) {
+      clearHistoryPassword();
+      return;
+    }
+    historyDetailEl.textContent = error.message;
+    setError(error.message);
+  }
+}
+
+function clearHistoryPassword() {
+  try {
+    sessionStorage.removeItem("historyPassword");
+  } catch (_error) {
+    // Storage may be unavailable.
+  }
+  historyUnlockEl.hidden = false;
 }
 
 async function retrySummary(callId, button) {
@@ -384,32 +414,6 @@ async function loadHistory() {
     historyDetailEl.hidden = true;
   }
 
-  async function selectHistoryCall(callId) {
-    try {
-      const call = await requestJson(
-        `/api/calls/${callId}`,
-        { headers: apiHeaders() },
-        "Could not load this call.",
-      );
-      await renderHistoryDetail(call);
-    } catch (error) {
-      if (error.status === 401) {
-        clearHistoryPassword();
-        return;
-      }
-      historyDetailEl.textContent = error.message;
-      setError(error.message);
-    }
-  }
-
-  function clearHistoryPassword() {
-    try {
-      sessionStorage.removeItem("historyPassword");
-    } catch (_error) {
-      // Storage may be unavailable.
-    }
-    historyUnlockEl.hidden = false;
-  }
 }
 
 function setDuration(seconds) {
@@ -616,8 +620,9 @@ function cleanup(closeSocket = true) {
   recorder = null;
 }
 
-function finishCall() {
+function finishCall(generation = callGeneration) {
   if (callPhase === "idle") return;
+  if (generation !== callGeneration) return;
   if (finishTimer) {
     clearTimeout(finishTimer);
     finishTimer = null;
@@ -634,31 +639,34 @@ function finishCall() {
 
 async function endCall() {
   if (callPhase !== "active") return;
+  const generation = callGeneration;
   callPhase = "ending";
   setStatus("ending");
   startBtn.disabled = true;
   endBtn.disabled = true;
-  if (recorder && recorder.state === "recording") {
-    recordingUploadPromise = new Promise((resolve) => {
-      const previous = recorder.onstop;
-      recorder.onstop = async () => {
-        if (previous) await previous();
-        resolve();
-      };
-    });
-    recorder.stop();
-    await recordingUploadPromise;
+  stopPlayback();
+  if (captureNode) {
+    captureNode.port.onmessage = null;
+  }
+  if (mediaStream) {
+    for (const track of mediaStream.getTracks()) track.stop();
+    mediaStream = null;
   }
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "end" }));
-    stopPlayback();
-    if (mediaStream) {
-      for (const track of mediaStream.getTracks()) track.stop();
-      mediaStream = null;
-    }
-    finishTimer = setTimeout(finishCall, 4000);
+  }
+  if (recorder && recorder.state === "recording") {
+    const recorderAtEnd = recorder;
+    recorder.onstop = () => {
+      recordingUploadPromise = uploadRecording();
+      recordingUploadPromise.catch(() => {});
+    };
+    recorderAtEnd.stop();
+  }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    finishTimer = setTimeout(() => finishCall(generation), 4000);
   } else {
-    finishCall();
+    finishCall(generation);
   }
 }
 
@@ -727,6 +735,7 @@ async function startCall() {
     return;
   }
   callPhase = "active";
+  callGeneration += 1;
   setError("");
   setStatus("connecting");
   setDuration(0);
@@ -803,7 +812,10 @@ async function startCall() {
         recorder.ondataavailable = (event) => {
           if (event.data.size) recordingChunks.push(event.data);
         };
-        recorder.onstop = uploadRecording;
+        recorder.onstop = () => {
+          recordingUploadPromise = uploadRecording();
+          recordingUploadPromise.catch(() => {});
+        };
         recorder.start();
         if (ws.readyState === WebSocket.OPEN && !recordingConsentSent) {
           ws.send(JSON.stringify({ type: "recording_consent", value: true }));
@@ -821,21 +833,57 @@ async function startCall() {
 
 async function uploadRecording() {
   if (!recordingChunks.length) return;
-  if (!recordingCallId) {
+  const uploadCallId = recordingCallId;
+  const uploadCallToken = recordingCallToken;
+  const uploadGeneration = callGeneration;
+  if (!uploadCallId) {
     setError("The call ended, but its recording could not be linked to the call record.");
     return;
   }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RECORDING_UPLOAD_TIMEOUT_MS);
+  const uploadHeaders = {
+    "Content-Type": recordingType,
+    ...(uploadCallToken ? { "X-Call-Token": uploadCallToken } : {}),
+  };
+  const isCurrentUpload = () =>
+    uploadGeneration === callGeneration &&
+    String(recordingCallId) === String(uploadCallId);
+  const verifySaved = async () => {
+    try {
+      const call = await requestJson(`/api/calls/${uploadCallId}`, {
+        headers: uploadCallToken ? { "X-Call-Token": uploadCallToken } : {},
+      }, "Could not verify recording status.");
+      if (call.has_recording) return true;
+      await requestJson(`/api/calls/${uploadCallId}/recording`, {
+        headers: uploadHeaders,
+      }, "Recording is not available yet.");
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  };
   try {
-    await requestJson(`/api/calls/${recordingCallId}/recording`, {
+    await requestJson(`/api/calls/${uploadCallId}/recording`, {
       method: "PUT",
-      headers: {
-        "Content-Type": recordingType,
-        ...(recordingCallToken ? { "X-Call-Token": recordingCallToken } : {}),
-      },
+      headers: uploadHeaders,
       body: new Blob(recordingChunks, { type: recordingType }),
+      signal: controller.signal,
     }, "The recording could not be saved.");
   } catch (error) {
-    setError(`The call ended, but its recording could not be saved: ${error.message}`);
+    if (error.name === "AbortError") {
+      if (await verifySaved()) return;
+      if (isCurrentUpload()) {
+        setError("The call ended, but recording persistence could not be confirmed before the client timeout. Check call history before retrying.");
+      }
+      return;
+    }
+    if (await verifySaved()) return;
+    if (isCurrentUpload()) {
+      setError(`The call ended, but its recording could not be saved: ${error.message}`);
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

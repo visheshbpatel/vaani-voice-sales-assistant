@@ -67,8 +67,17 @@ async def signed_recording_url(object_key: str) -> str:
     if not configured():
         if not settings.ALLOW_LOCAL_RECORDINGS:
             raise RuntimeError("Recording playback is unavailable.")
+        path = (LOCAL_RECORDINGS / object_key).resolve()
+        root = LOCAL_RECORDINGS.resolve()
+        if root not in path.parents or not path.is_file():
+            raise RuntimeError("Recording playback is unavailable.")
         return f"/api/calls/local/{object_key}"
     try:
+        await asyncio.to_thread(
+            _client().head_object,
+            Bucket=settings.STORAGE_BUCKET_NAME,
+            Key=object_key,
+        )
         return await asyncio.to_thread(
             _client().generate_presigned_url,
             "get_object",

@@ -1,17 +1,20 @@
 import json
 import logging
+import random
+import time
 from typing import Any
 
 import httpx
 from google import genai
-from google.genai import errors
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import settings
 from app.models.call import CallStatus
 
 logger = logging.getLogger(__name__)
+SUMMARY_MAX_ATTEMPTS = 3
+SUMMARY_RETRY_BASE_DELAY_SECONDS = 0.5
 
 
 class CallSummary(BaseModel):
@@ -29,6 +32,38 @@ class CallSummary(BaseModel):
     lead_contact: str = ""
     lead_preferred_time: str = ""
     status: CallStatus
+
+
+def _conservative_status(
+    summary: CallSummary, transcript: list[dict[str, Any]]
+) -> CallSummary:
+    customer_text = " ".join(
+        str(entry.get("text", "")).lower()
+        for entry in transcript
+        if entry.get("speaker") == "customer"
+    )
+    evidence = {
+        CallStatus.CONVERTED: (
+            "converted", "signed up", "sign up", "purchase", "buy", "go ahead",
+            "proceed",
+        ),
+        CallStatus.DEMO_REQUESTED: (
+            "request a demo", "requested a demo", "schedule a demo", "book a demo",
+            "see a demo", "demo",
+        ),
+        CallStatus.NOT_INTERESTED: (
+            "not interested", "no thank", "don't need", "do not need", "not for us",
+            "decline",
+        ),
+        CallStatus.INTERESTED: (
+            "interested", "sounds good", "like to learn", "tell me more",
+        ),
+    }
+    if summary.status in evidence and not any(
+        phrase in customer_text for phrase in evidence[summary.status]
+    ):
+        summary.status = CallStatus.FOLLOW_UP_REQUIRED
+    return summary
 
 
 class SummaryGenerationError(RuntimeError):
@@ -63,9 +98,11 @@ def parse_summary_response(response: Any) -> CallSummary:
 
 
 def _is_retryable_generation_error(exc: Exception) -> bool:
-    return isinstance(exc, (TimeoutError, httpx.TimeoutException)) or (
-        isinstance(exc, errors.APIError) and 500 <= exc.code < 600
-    )
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return True
+    if not isinstance(exc, errors.APIError):
+        return False
+    return exc.code in {408, 429} or 500 <= exc.code <= 504
 
 
 def generate_summary(transcript: list[dict[str, Any]]) -> CallSummary:
@@ -110,21 +147,31 @@ def generate_summary(transcript: list[dict[str, Any]]) -> CallSummary:
             response_schema=CallSummary,
             max_output_tokens=1500,
             temperature=0.2,
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.MINIMAL,
-            ),
         )
-        for attempt in range(2):
+        for attempt in range(SUMMARY_MAX_ATTEMPTS):
             try:
                 response = client.models.generate_content(
                     model=settings.SUMMARY_MODEL,
                     contents=prompt,
                     config=config,
                 )
-                return parse_summary_response(response)
+                return _conservative_status(
+                    parse_summary_response(response), transcript
+                )
             except Exception as exc:
-                if attempt == 0 and _is_retryable_generation_error(exc):
-                    logger.warning("Retrying call summary generation after a transient error.")
+                if (
+                    attempt + 1 < SUMMARY_MAX_ATTEMPTS
+                    and _is_retryable_generation_error(exc)
+                ):
+                    delay = SUMMARY_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+                    delay += random.uniform(0, delay / 2)
+                    logger.warning(
+                        "Retrying call summary generation after a transient error "
+                        "(attempt %d/%d).",
+                        attempt + 1,
+                        SUMMARY_MAX_ATTEMPTS,
+                    )
+                    time.sleep(delay)
                     continue
                 raise
     except SummaryGenerationError:

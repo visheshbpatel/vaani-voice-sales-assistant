@@ -130,8 +130,15 @@ async def upload_recording(call_id: int, request: Request, db: Session = Depends
     if content_type not in {"audio/webm", "audio/ogg"}:
         raise HTTPException(status_code=415, detail="Unsupported recording format.")
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > settings.RECORDING_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid recording length.")
+        if declared_length < 0:
+            raise HTTPException(status_code=400, detail="Invalid recording length.")
+        if declared_length > settings.RECORDING_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Recording is empty or too large.")
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():

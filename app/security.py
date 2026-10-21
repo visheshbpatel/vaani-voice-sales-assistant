@@ -68,7 +68,11 @@ def require_history_access(
     list_access: bool = False,
     require_credentials: bool = False,
 ) -> None:
-    if not settings.HISTORY_PASSWORD and not require_credentials:
+    if (
+        not settings.HISTORY_PASSWORD
+        and settings.ALLOW_LOCAL_RECORDINGS
+        and not require_credentials
+    ):
         return
     if valid_password(password) or (
         not list_access and call_id is not None and valid_call_token(call_id, token)
