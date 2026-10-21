@@ -13,13 +13,17 @@
         Unofficial prototype: real-time AI voice sales assistant for Surefy
         (Sankar Group intern assignment). Not an official Surefy product.
       </p>
-      <p id="status" class="status">ended</p>
+      <p id="status" class="status">ready</p>
       <p class="duration">Duration: <span id="duration">00:00</span></p>
       <p id="error" class="error" hidden></p>
+      <div class="notice">
+        <p>Your voice is streamed to Google's Gemini API so the assistant can reply.</p>
+        <p>A text transcript of every call is saved to this prototype's call history.</p>
+        <p>Audio is recorded and stored privately only if you tick the box below.</p>
+      </div>
       <label class="consent">
         <input id="recording-consent" type="checkbox" />
-        I consent to recording this call for this prototype. Recordings are stored privately
-        and used only for this call record.
+        I consent to recording this call (both sides) and storing it privately for this prototype.
       </label>
       <section>
         <h2>Conversation</h2>
@@ -32,15 +36,18 @@
         <button id="start" type="button">Start Call</button>
         <button id="end" type="button" disabled>End Call</button>
       </div>
-      <section id="follow-up" hidden>
-        <h2>Collected details</h2>
-        <p>Saved with this call record in the prototype. It is not sent to Surefy.</p>
-        <dl class="collected-details">
-          <dt>Name</dt><dd id="lead-name">Not collected</dd>
-          <dt>Company</dt><dd id="lead-company">Not collected</dd>
-          <dt>Phone/email</dt><dd id="lead-contact">Not collected</dd>
-          <dt>Preferred time</dt><dd id="lead-preferred-time">Not collected</dd>
-        </dl>
+      <section id="result" class="result" hidden aria-live="polite"></section>
+      <section id="follow-up" class="lead-form" hidden>
+        <h2>Follow-up details</h2>
+        <p>Optional details saved with this prototype call record. They are not sent to Surefy.</p>
+        <form id="lead-form">
+          <label>Name <input id="lead-name" name="name" type="text" /></label>
+          <label>Company <input id="lead-company" name="company" type="text" /></label>
+          <label>Phone or email <input id="lead-contact" name="contact" type="text" /></label>
+          <label>Preferred time <input id="lead-preferred-time" name="preferred_time" type="text" /></label>
+          <label><input id="lead-contact-consent" name="consent" type="checkbox" /> I consent to being contacted.</label>
+          <button type="submit">Save follow-up details</button>
+        </form>
       </section>
       <section class="history-section" aria-labelledby="history-heading">
         <div class="section-heading">
@@ -50,6 +57,11 @@
           </button>
         </div>
         <p id="history-status" class="history-status" aria-live="polite">Loading history...</p>
+        <div id="history-unlock" class="history-unlock" hidden>
+          <p>History is password protected</p>
+          <label>Password <input id="history-password" type="password" /></label>
+          <button id="history-unlock-button" type="button">Unlock</button>
+        </div>
         <div id="history-list" class="history-list"></div>
         <article id="history-detail" class="history-detail" hidden aria-live="polite"></article>
       </section>

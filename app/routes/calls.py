@@ -13,7 +13,7 @@ from app.models.call import Call, CallStatus, SummaryGenerationStatus
 from app.schemas.call import CallHistory, CallListItem, LeadUpdate
 from app.services.recording_storage import save_recording, signed_recording_url
 from app.config import settings
-from app.security import require_history_access
+from app.security import require_history_access, valid_call_token, valid_password
 from app.services.call_summary import (
     SummaryGenerationError,
     generate_summary,
@@ -135,12 +135,13 @@ def retry_summary(
 
 @router.put("/{call_id}/recording")
 async def upload_recording(call_id: int, request: Request, db: Session = Depends(get_db)):
-    require_history_access(
-        call_id,
-        request.headers.get("x-history-password"),
-        request.headers.get("x-call-token"),
-        require_credentials=True,
-    )
+    history_password = request.headers.get("x-history-password")
+    call_token = request.headers.get("x-call-token")
+    if not valid_password(history_password):
+        if not call_token:
+            raise HTTPException(status_code=401, detail="missing call token")
+        if not valid_call_token(call_id, call_token):
+            raise HTTPException(status_code=401, detail="invalid call token")
     call = db.get(Call, call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")

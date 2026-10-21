@@ -5,15 +5,21 @@ const endBtn = document.getElementById("end");
 const durationEl = document.getElementById("duration");
 const transcriptEl = document.getElementById("transcript");
 const followUpEl = document.getElementById("follow-up");
+const resultEl = document.getElementById("result");
+const leadForm = document.getElementById("lead-form");
 const recordingConsent = document.getElementById("recording-consent");
 const leadNameEl = document.getElementById("lead-name");
 const leadCompanyEl = document.getElementById("lead-company");
 const leadContactEl = document.getElementById("lead-contact");
 const leadPreferredTimeEl = document.getElementById("lead-preferred-time");
+const leadContactConsent = document.getElementById("lead-contact-consent");
 const refreshHistoryBtn = document.getElementById("refresh-history");
 const historyStatusEl = document.getElementById("history-status");
 const historyListEl = document.getElementById("history-list");
 const historyDetailEl = document.getElementById("history-detail");
+const historyUnlockEl = document.getElementById("history-unlock");
+const historyPasswordEl = document.getElementById("history-password");
+const historyUnlockButton = document.getElementById("history-unlock-button");
 
 const OUTPUT_RATE = 24000;
 
@@ -27,6 +33,7 @@ let nextPlayTime = 0;
 let activeSources = [];
 let playGeneration = 0;
 let starting = false;
+let callPhase = "idle";
 let transcriptEntries = new Map();
 let activeTranscriptEntry = null;
 let activeTranscriptSpeaker = null;
@@ -39,13 +46,27 @@ let recordingType = "";
 let recordingDestination = null;
 let recordingSourceNode = null;
 let recordingUploadPromise = null;
-let pendingLeadDetail = null;
 let recordingConsentSent = false;
-let customerTranscript = [];
+let recordingCallId = null;
+let recordingCallToken = null;
 let leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
-let leadDetailsConfirmed = false;
+let callToken = null;
+let finishTimer = null;
+let summaryPollTimer = null;
 let historyCalls = [];
 let selectedHistoryId = null;
+
+function apiHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (callToken) headers["X-Call-Token"] = callToken;
+  try {
+    const password = sessionStorage.getItem("historyPassword");
+    if (password) headers["X-History-Password"] = password;
+  } catch (_error) {
+    // Storage may be unavailable in privacy-restricted browsers.
+  }
+  return headers;
+}
 
 function setStatus(value) {
   statusEl.textContent = value;
@@ -90,8 +111,11 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function displayStatus(status) {
-  return status || "No Response";
+function displayStatus(call) {
+  if (call.status) return call.status;
+  if (call.summary_generation_status === "failed") return "Summary failed";
+  if (!call.ended_at) return "In progress";
+  return "Summary pending";
 }
 
 function renderHistoryTranscript(transcript) {
@@ -106,27 +130,135 @@ function renderHistoryTranscript(transcript) {
     .join("");
 }
 
+const summaryFields = [
+  ["business_use_case", "Business use case"],
+  ["needs", "Needs"],
+  ["modules_discussed", "Modules discussed"],
+  ["questions", "Questions"],
+  ["objections", "Objections"],
+  ["interest", "Interest"],
+  ["interest_evidence", "Interest evidence"],
+  ["next_steps", "Next steps"],
+  ["unknowns", "Unknowns"],
+];
+
+function summaryValue(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).map(escapeHtml).join("<br />");
+  if (value && typeof value === "object") return escapeHtml(JSON.stringify(value));
+  return escapeHtml(value || "");
+}
+
+function renderSummary(summary) {
+  if (!summary || typeof summary !== "object") {
+    return '<p class="history-empty">Summary unavailable.</p>';
+  }
+  return summaryFields
+    .filter(([key]) => summary[key] !== null && summary[key] !== undefined && summary[key] !== "" &&
+      (!Array.isArray(summary[key]) || summary[key].length))
+    .map(([key, label]) => `<div><h4>${escapeHtml(label)}</h4><p>${summaryValue(summary[key])}</p></div>`)
+    .join("");
+}
+
+function retryButton(callId) {
+  return `<button type="button" class="retry-summary" data-call-id="${escapeHtml(callId)}">Retry summary</button>`;
+}
+
+function bindRetryButtons(container) {
+  container.querySelectorAll(".retry-summary").forEach((button) => {
+    button.addEventListener("click", () => retrySummary(button.dataset.callId, button));
+  });
+}
+
+async function retrySummary(callId, button) {
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/calls/${callId}/summary/retry`, {
+      method: "POST",
+      headers: apiHeaders(),
+    });
+    if (response.status === 401) {
+      clearHistoryPassword();
+      throw new Error("history password rejected");
+    }
+    if (!response.ok) throw new Error("retry failed");
+    const call = await response.json();
+    if (String(callId) === String(currentCallId)) renderResult(call);
+    if (String(selectedHistoryId) === String(callId)) await renderHistoryDetail(call);
+  } catch (_error) {
+    setError("Could not retry the summary.");
+    button.disabled = false;
+  }
+}
+
+function renderLeadForm(call) {
+  leadNameEl.value = call.lead_name || "";
+  leadCompanyEl.value = call.lead_company || "";
+  leadContactEl.value = call.lead_contact || "";
+  leadPreferredTimeEl.value = call.lead_preferred_time || "";
+  leadContactConsent.checked = call.lead_contact_consent === true;
+  followUpEl.hidden = false;
+}
+
+function renderResult(call) {
+  if (!call || !call.id) return;
+  const summaryStatus = call.summary_generation_status || "pending";
+  resultEl.hidden = false;
+  resultEl.innerHTML = `
+    <h2>Call result</h2>
+    <p><span class="badge">${escapeHtml(displayStatus(call))}</span></p>
+    ${summaryStatus === "completed" ? renderSummary(call.summary_data) :
+      `<p>${summaryStatus === "failed" ? "Summary generation failed." : "Summary is still being generated."}</p>${retryButton(call.id)}`}
+  `;
+  bindRetryButtons(resultEl);
+  renderLeadForm(call);
+}
+
+async function pollSummary(callId) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const response = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
+      if (!response.ok) throw new Error("call unavailable");
+      const call = await response.json();
+      renderResult(call);
+      if (call.summary_generation_status !== "pending") return;
+    } catch (_error) {
+      resultEl.hidden = false;
+      resultEl.innerHTML = "<p>Could not load the call result.</p>";
+      return;
+    }
+    await new Promise((resolve) => {
+      summaryPollTimer = setTimeout(resolve, 2000);
+    });
+  }
+  const response = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
+  if (response.ok) renderResult(await response.json());
+}
+
 async function renderHistoryDetail(call) {
   selectedHistoryId = call.id;
   historyDetailEl.hidden = false;
   historyDetailEl.innerHTML = `
     <h3>Call #${call.id}</h3>
-    <p class="history-meta">Started ${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))} · ${escapeHtml(displayStatus(call.status))}</p>
+    <p class="history-meta">Started ${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))} · ${escapeHtml(displayStatus(call))}</p>
     <h4>Summary</h4>
-    <p>${escapeHtml(call.summary || "Summary unavailable.")}</p>
+    <div>${renderSummary(call.summary_data)}</div>
+    ${call.summary_generation_status !== "completed" ? retryButton(call.id) : ""}
+    ${call.lead_name || call.lead_company || call.lead_contact || call.lead_preferred_time ? `
+      <h4>Lead details</h4><p>${escapeHtml([call.lead_name, call.lead_company, call.lead_contact, call.lead_preferred_time].filter(Boolean).join(" · "))}</p>` : ""}
     <h4>Transcript</h4>
     <div class="history-transcript">${renderHistoryTranscript(call.transcript)}</div>
     <h4>Recording</h4>
     <p id="recording-state">Loading recording...</p>
   `;
+  bindRetryButtons(historyDetailEl);
   renderHistoryList();
   const recordingState = document.getElementById("recording-state");
-  if (!call.recording_object_key) {
+  if (!call.has_recording) {
     recordingState.textContent = "Recording unavailable.";
     return;
   }
   try {
-    const response = await fetch(`/api/calls/${call.id}/recording`);
+    const response = await fetch(`/api/calls/${call.id}/recording`, { headers: apiHeaders() });
     if (!response.ok) throw new Error("recording unavailable");
     const data = await response.json();
     const player = document.createElement("audio");
@@ -153,12 +285,12 @@ function renderHistoryList() {
     button.setAttribute("aria-current", String(call.id === selectedHistoryId));
     button.innerHTML = `
       <span>
-        <span class="history-item-title">Call #${call.id}</span>
-        <span class="history-item-meta">${formatDate(call.started_at)} · ${formatDuration(Math.round(call.duration_seconds || 0))}</span>
+        <span class="history-item-title">Call #${escapeHtml(call.id)}</span>
+        <span class="history-item-meta">${escapeHtml(formatDate(call.started_at))} · ${formatDuration(Math.round(call.duration_seconds || 0))}</span>
       </span>
-      <span class="history-item-status">${displayStatus(call.status)}</span>
+      <span class="history-item-status">${escapeHtml(displayStatus(call))}</span>
     `;
-    button.addEventListener("click", () => renderHistoryDetail(call));
+    button.addEventListener("click", () => selectHistoryCall(call.id));
     historyListEl.appendChild(button);
   }
 }
@@ -166,8 +298,15 @@ function renderHistoryList() {
 async function loadHistory() {
   historyStatusEl.textContent = "Loading history...";
   try {
-    const response = await fetch("/api/calls");
+    const response = await fetch("/api/calls?limit=50", { headers: apiHeaders() });
+    if (response.status === 401) {
+      clearHistoryPassword();
+      historyUnlockEl.hidden = false;
+      historyStatusEl.textContent = "";
+      return;
+    }
     if (!response.ok) throw new Error("history unavailable");
+    historyUnlockEl.hidden = true;
     historyCalls = await response.json();
     historyStatusEl.textContent = historyCalls.length
       ? `${historyCalls.length} saved call${historyCalls.length === 1 ? "" : "s"}`
@@ -175,7 +314,7 @@ async function loadHistory() {
     renderHistoryList();
     if (selectedHistoryId) {
       const selected = historyCalls.find((call) => call.id === selectedHistoryId);
-      if (selected) await renderHistoryDetail(selected);
+      if (selected) await selectHistoryCall(selected.id);
     }
   } catch (_error) {
     historyCalls = [];
@@ -183,55 +322,33 @@ async function loadHistory() {
     historyListEl.innerHTML = '<p class="history-error">Could not load saved calls. Try Refresh.</p>';
     historyDetailEl.hidden = true;
   }
+
+  async function selectHistoryCall(callId) {
+    try {
+      const response = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
+      if (response.status === 401) {
+        clearHistoryPassword();
+        return;
+      }
+      if (!response.ok) throw new Error("call unavailable");
+      await renderHistoryDetail(await response.json());
+    } catch (_error) {
+      historyDetailEl.textContent = "Could not load this call.";
+    }
+  }
+
+  function clearHistoryPassword() {
+    try {
+      sessionStorage.removeItem("historyPassword");
+    } catch (_error) {
+      // Storage may be unavailable.
+    }
+    historyUnlockEl.hidden = false;
+  }
 }
 
 function setDuration(seconds) {
   durationEl.textContent = formatDuration(seconds);
-}
-
-function setLeadDetail(name, value) {
-  if (value && leadDetails[name] !== undefined) {
-    leadDetails[name] = value.trim();
-  }
-}
-
-function extractAssistantLeadDetails(text) {
-  const value = text.trim();
-  const name = value.match(
-    /(?:your|the) name is\s+(.+?)(?=,\s*(?:the )?company is|,\s*company is)/i,
-  );
-  const company = value.match(
-    /(?:the )?company is\s+(.+?)(?=,\s*(?:your )?(?:email|phone)|,\s*and\s+(?:your )?(?:email|phone))/i,
-  );
-  const email = value.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/);
-  const phone = value.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
-  const preferred = value.match(
-    /(?:you.?d prefer|preferred time is|prefer(?:red)? time(?: would be)? is?)\s+(.+?)(?=\.\s|,\s*is that|\?|$)/i,
-  );
-  if (name) setLeadDetail("name", name[1].trim());
-  if (company) setLeadDetail("company", company[1].trim());
-  if (email) setLeadDetail("contact", email[0]);
-  else if (phone) setLeadDetail("contact", phone[0].trim());
-  if (preferred) {
-    setLeadDetail(
-      "preferred_time",
-      preferred[1]
-        .replace(/^the demo\s+/i, "")
-        .replace(/[.!]+$/, "")
-        .trim(),
-    );
-  }
-  if (name || company || email || phone || preferred) {
-    leadDetailsConfirmed = true;
-    renderLeadDetails();
-  }
-}
-
-function renderLeadDetails() {
-  leadNameEl.textContent = leadDetails.name || "Not collected";
-  leadCompanyEl.textContent = leadDetails.company || "Not collected";
-  leadContactEl.textContent = leadDetails.contact || "Not collected";
-  leadPreferredTimeEl.textContent = leadDetails.preferred_time || "Not collected";
 }
 
 function clearTranscript() {
@@ -291,81 +408,9 @@ function addTranscriptMessage(speaker, text, partial) {
     !partial && message.dataset.partial === "true"
       ? text.trim()
       : mergeTranscriptText(previousText, text);
-  if (speaker === "assistant" && !partial) {
-    const completeText = message.lastChild.textContent;
-    extractAssistantLeadDetails(completeText);
-    pendingLeadDetail = detailPromptType(completeText);
-  }
-  if (speaker === "customer" && !partial) {
-    const completeText = message.lastChild.textContent;
-    updateLeadDraft(completeText);
-    if (/^(correct|yes|that'?s correct|looks good)$/i.test(completeText.trim())) {
-      leadDetailsConfirmed = true;
-      renderLeadDetails();
-    }
-  }
   message.dataset.partial = String(partial);
   if (!partial) {
     finalizeTranscriptMessage();
-  }
-
-  function detailPromptType(text) {
-    const value = text.toLowerCase();
-    if (value.includes("full name") || value.includes("your name")) return "name";
-    if (value.includes("company")) return "company";
-    if (value.includes("phone") || value.includes("email")) return "contact";
-    if (value.includes("preferred time") || value.includes("best time")) return "preferred_time";
-    return null;
-  }
-
-  function updateLeadDraft(text) {
-    const value = text.trim();
-    customerTranscript.push(value);
-    const email = value.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/);
-    const phone = value.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
-    const name = value.match(/(?:my\s+)?name\s+is\s+([^,.;]+?)(?=\s+and\s+|\s+contact\s+is\s+|$)/i);
-    const company = value.match(/(?:my\s+)?company\s+is\s+([^,.;]+?)(?=\s+and\s+|$)/i);
-    if (name) setLeadDetail("name", name[1]);
-    if (company) setLeadDetail("company", company[1]);
-    if (email) {
-      setLeadDetail("contact", email[0]);
-    }
-    if (phone) {
-      setLeadDetail("contact", phone[0]);
-    }
-    if (!name && pendingLeadDetail === "name") {
-      setLeadDetail("name", value);
-    }
-    if (!company && pendingLeadDetail === "company") {
-      setLeadDetail("company", value);
-    }
-    if (pendingLeadDetail === "preferred_time") {
-      setLeadDetail("preferred_time", value);
-    }
-    if (pendingLeadDetail && !email) {
-      setLeadDetail(pendingLeadDetail, value
-        .replace(/^(my name is|name is|my company is|company is)\s+/i, "")
-        .replace(/[.!?]+$/, "")
-        .trim());
-    }
-    if (pendingLeadDetail === "contact" && !email) {
-      setLeadDetail("contact", value);
-    }
-    pendingLeadDetail = null;
-    extractLeadDetailsFromTranscript();
-  }
-
-  function extractLeadDetailsFromTranscript() {
-    const text = customerTranscript.join(" ");
-    const email = text.match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/);
-    const phone = text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
-    const name = text.match(/(?:my\s+)?name\s+is\s+([^,.;]+?)(?=\s+and\s+|\s+contact\s+is\s+|$)/i);
-    const company = text.match(/(?:my\s+)?company\s+is\s+([^,.;]+?)(?=\s+and\s+|$)/i);
-    if (name) setLeadDetail("name", name[1]);
-    if (company) setLeadDetail("company", company[1]);
-    if (email) setLeadDetail("contact", email[0]);
-    else if (phone) setLeadDetail("contact", phone[0]);
-    renderLeadDetails();
   }
   if (shouldAutoScroll) {
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -503,11 +548,30 @@ function cleanup(closeSocket = true) {
   recordingDestination = null;
   recorder = null;
   starting = false;
+}
+
+function finishCall() {
+  if (callPhase === "idle") return;
+  if (finishTimer) {
+    clearTimeout(finishTimer);
+    finishTimer = null;
+  }
+  cleanup();
+  callPhase = "idle";
   startBtn.disabled = false;
   endBtn.disabled = true;
+  setStatus("ended");
+  if (currentCallId) {
+    pollSummary(currentCallId);
+  }
 }
 
 async function endCall() {
+  if (callPhase !== "active") return;
+  callPhase = "ending";
+  setStatus("ending");
+  startBtn.disabled = true;
+  endBtn.disabled = true;
   if (recorder && recorder.state === "recording") {
     recordingUploadPromise = new Promise((resolve) => {
       const previous = recorder.onstop;
@@ -520,17 +584,16 @@ async function endCall() {
     await recordingUploadPromise;
   }
   if (ws && ws.readyState === WebSocket.OPEN) {
-    if (Object.values(leadDetails).some(Boolean)) {
-      ws.send(JSON.stringify({ type: "lead_details", value: leadDetails }));
-    }
     ws.send(JSON.stringify({ type: "end" }));
-    cleanup(false);
+    stopPlayback();
+    if (mediaStream) {
+      for (const track of mediaStream.getTracks()) track.stop();
+      mediaStream = null;
+    }
+    finishTimer = setTimeout(finishCall, 4000);
   } else {
-    cleanup();
+    finishCall();
   }
-  setStatus("ended");
-  await saveLeadDetails();
-  followUpEl.hidden = false;
 }
 
 function handleSocketMessage(event) {
@@ -561,6 +624,9 @@ function handleSocketMessage(event) {
   }
   if (payload.type === "call_started") {
     currentCallId = payload.call_id;
+    callToken = payload.token;
+    recordingCallId = payload.call_id;
+    recordingCallToken = payload.token;
     return;
   }
   if (payload.type === "transcript" && payload.speaker && payload.text) {
@@ -590,23 +656,28 @@ function handleSocketMessage(event) {
 }
 
 async function startCall() {
-  if (starting || ws) {
+  if (callPhase !== "idle") {
     return;
   }
+  callPhase = "active";
   starting = true;
   setError("");
   setStatus("connecting");
   setDuration(0);
   clearTranscript();
+  if (summaryPollTimer) {
+    clearTimeout(summaryPollTimer);
+    summaryPollTimer = null;
+  }
   currentCallId = null;
+  callToken = null;
+  recordingCallId = null;
+  recordingCallToken = null;
   recordingUploadPromise = null;
-  pendingLeadDetail = null;
   recordingConsentSent = false;
-  customerTranscript = [];
   leadDetails = { name: "", company: "", contact: "", preferred_time: "" };
-  leadDetailsConfirmed = false;
-  renderLeadDetails();
   followUpEl.hidden = true;
+  resultEl.hidden = true;
   startBtn.disabled = true;
   endBtn.disabled = false;
   try {
@@ -641,8 +712,10 @@ async function startCall() {
     };
     ws.onclose = () => {
       ws = null;
-      if (statusEl.textContent !== "ended") {
+      if (callPhase === "active") {
         endCall();
+      } else if (callPhase === "ending") {
+        finishCall();
       }
     };
     ws.onopen = () => {
@@ -685,71 +758,69 @@ async function startCall() {
 
 async function uploadRecording() {
   if (!recordingChunks.length) return;
-  if (!currentCallId) {
+  if (!recordingCallId) {
     setError("The call ended, but its recording could not be linked to the call record.");
     return;
   }
   try {
-    const response = await fetch(`/api/calls/${currentCallId}/recording`, {
+    const response = await fetch(`/api/calls/${recordingCallId}/recording`, {
       method: "PUT",
-      headers: { "Content-Type": recordingType },
+      headers: {
+        "Content-Type": recordingType,
+        ...(recordingCallToken ? { "X-Call-Token": recordingCallToken } : {}),
+      },
       body: new Blob(recordingChunks, { type: recordingType }),
     });
-    if (!response.ok) throw new Error("upload failed");
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "upload failed");
+    }
   } catch (_err) {
     setError("The call ended, but its recording could not be saved.");
-  }
-}
-
-async function saveLeadDetails() {
-  if (!currentCallId) {
-    setError("This call was not saved, so collected details cannot be stored.");
-    return;
-  }
-  try {
-    let savedCall = null;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const response = await fetch(`/api/calls/${currentCallId}`);
-      if (response.ok) {
-        savedCall = await response.json();
-        if (
-          savedCall.lead_name ||
-          savedCall.lead_company ||
-          savedCall.lead_contact ||
-          savedCall.lead_preferred_time
-        ) {
-          break;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    }
-    if (!savedCall) throw new Error("call unavailable");
-    const savedDetails = {
-      name: savedCall.lead_name || leadDetails.name,
-      company: savedCall.lead_company || leadDetails.company,
-      contact: savedCall.lead_contact || leadDetails.contact,
-      preferred_time: savedCall.lead_preferred_time || leadDetails.preferred_time,
-    };
-    if (!Object.values(savedDetails).some(Boolean)) {
-      throw new Error("details unavailable");
-    }
-    leadDetails = savedDetails;
-    renderLeadDetails();
-    const leadResponse = await fetch(`/api/calls/${currentCallId}/lead`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...savedDetails, consent: true }),
-    });
-    if (!leadResponse.ok) throw new Error("save failed");
-    setError("");
-  } catch (_err) {
-    setError("Could not save collected details.");
   }
 }
 
 startBtn.addEventListener("click", startCall);
 endBtn.addEventListener("click", endCall);
 refreshHistoryBtn.addEventListener("click", loadHistory);
+leadForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!currentCallId) return;
+  const fields = ["name", "company", "contact", "preferred_time"];
+  const fieldIds = {
+    name: "lead-name",
+    company: "lead-company",
+    contact: "lead-contact",
+    preferred_time: "lead-preferred-time",
+  };
+  const details = Object.fromEntries(fields.map((field) => {
+    const value = document.getElementById(fieldIds[field]).value.trim();
+    return [field, value || null];
+  }));
+  try {
+    const response = await fetch(`/api/calls/${currentCallId}/lead`, {
+      method: "PATCH",
+      headers: apiHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ ...details, consent: leadContactConsent.checked }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "Could not save follow-up details.");
+    }
+    setError("");
+  } catch (error) {
+    setError(error.message);
+  }
+});
+historyUnlockButton.addEventListener("click", () => {
+  try {
+    sessionStorage.setItem("historyPassword", historyPasswordEl.value);
+  } catch (_error) {
+    setError("Could not store the history password in this browser.");
+    return;
+  }
+  loadHistory();
+});
 transcriptEl.addEventListener("scroll", () => {
   shouldAutoScroll =
     transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 16;

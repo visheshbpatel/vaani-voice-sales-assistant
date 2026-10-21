@@ -230,6 +230,40 @@ def test_recording_upload_normalizes_type_rejects_duplicate_and_size(
     assert oversized.status_code == 413
 
 
+def test_recording_upload_accepts_call_token_and_rejects_wrong_token(
+    db_session, monkeypatch
+):
+    call = create_call(db_session)
+    call.recording_consent = True
+    db_session.commit()
+
+    async def save_recording(*args):
+        return "call-1/audio.webm"
+
+    monkeypatch.setattr("app.routes.calls.save_recording", save_recording)
+    with TestClient(app) as client:
+        response = client.put(
+            f"/api/calls/{call.id}/recording",
+            content=b"audio",
+            headers={
+                "Content-Type": "audio/webm",
+                "X-Call-Token": make_call_token(call.id),
+            },
+        )
+        wrong_token = client.put(
+            f"/api/calls/{call.id}/recording",
+            content=b"audio",
+            headers={
+                "Content-Type": "audio/webm",
+                "X-Call-Token": "wrong-token",
+            },
+        )
+
+    assert response.status_code == 200
+    assert wrong_token.status_code == 401
+    assert wrong_token.json()["detail"] == "invalid call token"
+
+
 def test_local_recordings_can_be_disabled(db_session, monkeypatch):
     monkeypatch.setattr(settings, "ALLOW_LOCAL_RECORDINGS", False)
     monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", db_session.bind.url.database)

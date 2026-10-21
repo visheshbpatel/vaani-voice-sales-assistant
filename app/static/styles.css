@@ -38,6 +38,17 @@ h1 {
   color: #b91c1c;
 }
 
+.notice {
+  padding: 0.75rem 1rem;
+  border-left: 4px solid #a8a29e;
+  background: #fafaf9;
+  color: #57534e;
+}
+
+.notice p {
+  margin: 0.25rem 0;
+}
+
 .duration {
   color: #57534e;
 }
@@ -166,6 +177,75 @@ h2 {
   width: 100%;
 }
 
+.result {
+  padding: 1rem;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+  background: #fafaf9;
+}
+
+.result h3,
+.result h4 {
+  margin-bottom: 0.35rem;
+}
+
+.result p {
+  white-space: pre-wrap;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: #e7e5e4;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.lead-form {
+  padding: 1rem;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+}
+
+.lead-form form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.lead-form label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.lead-form input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #d6d3d1;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.history-unlock {
+  padding: 0.75rem;
+  background: #fafaf9;
+  border: 1px solid #e7e5e4;
+  border-radius: 8px;
+}
+
+.history-unlock label {
+  display: inline-grid;
+  gap: 0.25rem;
+  margin-right: 0.5rem;
+}
+
+.history-unlock input {
+  padding: 0.45rem;
+  border: 1px solid #d6d3d1;
+  border-radius: 6px;
+}
+
 @media (max-width: 36rem) {
   main {
     padding: 1rem;
@@ -174,16 +254,6 @@ h2 {
   .history-item {
     grid-template-columns: 1fr;
   }
-}
-
-.collected-details {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.5rem 1rem;
-}
-
-.collected-details dd {
-  margin: 0;
 }
 
 button {

@@ -1,10 +1,36 @@
 import hashlib
 import hmac
+import os
 import secrets
+from pathlib import Path
 
 from app.config import settings
 
-_runtime_secret = secrets.token_bytes(32)
+_runtime_secret_path = Path("tmp") / ".call-token-secret"
+
+
+def _load_runtime_secret() -> bytes:
+    try:
+        _runtime_secret_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            file_descriptor = os.open(
+                _runtime_secret_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError:
+            secret = _runtime_secret_path.read_bytes()
+            if len(secret) != 32:
+                raise RuntimeError("The call token secret has an invalid length.")
+            return secret
+        with os.fdopen(file_descriptor, "wb") as secret_file:
+            secret = secrets.token_bytes(32)
+            secret_file.write(secret)
+            return secret
+    except OSError as error:
+        raise RuntimeError("The call token secret could not be loaded.") from error
+
+
+_runtime_secret = _load_runtime_secret()
 
 
 def _secret() -> bytes:
