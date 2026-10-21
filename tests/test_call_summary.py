@@ -84,6 +84,32 @@ def test_retry_updates_same_record(db_session, monkeypatch):
     assert response.json()["summary_generation_status"] == "completed"
 
 
+def test_summary_prefills_empty_lead_columns_without_consent(db_session, monkeypatch):
+    call = create_call(db_session)
+    call.transcript = [{"speaker": "customer", "text": "My name is Ada"}]
+    call.lead_contact_consent = None
+    db_session.commit()
+    summary_data = {
+        **_valid_summary(),
+        "lead_name": "Ada",
+        "lead_company": "Acme",
+        "lead_contact": "ada@example.com",
+        "lead_preferred_time": "Tomorrow morning",
+    }
+    monkeypatch.setattr(
+        "app.routes.calls.generate_summary",
+        lambda transcript: call_summary.CallSummary.model_validate(summary_data),
+    )
+
+    generate_call_summary(db_session, call)
+
+    assert call.lead_name == "Ada"
+    assert call.lead_company == "Acme"
+    assert call.lead_contact == "ada@example.com"
+    assert call.lead_preferred_time == "Tomorrow morning"
+    assert call.lead_contact_consent is None
+
+
 def test_status_schema_rejects_unknown_value():
     with pytest.raises(ValidationError):
         call_summary.CallSummary.model_validate(

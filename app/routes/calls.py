@@ -102,6 +102,15 @@ def generate_call_summary(db: Session, call: Call) -> Call:
         call.customer_requirements = "\n".join(summary.needs) or None
         call.objections = "\n".join(summary.objections) or None
         call.next_steps = "\n".join(summary.next_steps) or None
+        for field in (
+            "lead_name",
+            "lead_company",
+            "lead_contact",
+            "lead_preferred_time",
+        ):
+            value = getattr(summary, field).strip()
+            if value and not getattr(call, field):
+                setattr(call, field, value)
         call.summary_generation_status = SummaryGenerationStatus.COMPLETED
     db.commit()
     db.refresh(call)

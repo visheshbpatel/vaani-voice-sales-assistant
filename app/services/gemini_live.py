@@ -69,7 +69,7 @@ async def _browser_to_gemini(
     stop: asyncio.Event,
     playback_idle: asyncio.Event,
     caller_spoke: asyncio.Event,
-    timing: dict[str, float | None],
+    timing: dict[str, float | bool | None],
     on_recording_consent=None,
 ) -> str:
     try:
@@ -94,11 +94,15 @@ async def _browser_to_gemini(
             chunk = message.get("bytes")
             if not chunk:
                 continue
+            now = time.monotonic()
+            if timing["first_mic_received_at"] is None:
+                timing["first_mic_received_at"] = now
+                logger.info("voice first_mic_chunk")
             caller_spoke.set()
             await session.send_realtime_input(
                 audio=types.Blob(data=chunk, mime_type=INPUT_MIME)
             )
-            timing["last_mic_sent_at"] = time.monotonic()
+            timing["last_mic_received_at"] = now
     except WebSocketDisconnect:
         return "client_disconnect"
     finally:
@@ -113,7 +117,7 @@ async def _gemini_to_browser(
     transcript_seen: asyncio.Event,
     playback_idle: asyncio.Event,
     caller_spoke: asyncio.Event,
-    timing: dict[str, float | None],
+    timing: dict[str, float | bool | None],
     on_transcript: Callable[[str, str, bool], None] | None = None,
 ) -> str:
     nudge_task = None
@@ -158,6 +162,12 @@ async def _gemini_to_browser(
                 ):
                     text = getattr(transcription, "text", None) if transcription else None
                     if text:
+                        if (
+                            speaker == "customer"
+                            and not timing["input_transcription_logged"]
+                        ):
+                            logger.info("voice first_input_transcription")
+                            timing["input_transcription_logged"] = True
                         transcript_seen.set()
                         if on_transcript:
                             on_transcript(
@@ -193,21 +203,25 @@ async def _gemini_to_browser(
                         )
                         if not pcm:
                             continue
-                        if (
-                            timing["last_mic_sent_at"] is not None
-                            and not timing["response_logged"]
-                        ):
-                            latency_ms = (
-                                time.monotonic() - timing["last_mic_sent_at"]
-                            ) * 1000
-                            logger.info(
-                                "response_latency_ms=%.0f", latency_ms
-                            )
-                            timing["response_logged"] = True
                         await websocket.send_json(
                             {"type": "status", "value": "speaking"}
                         )
                         await websocket.send_bytes(pcm)
+                        if (
+                            timing["last_mic_received_at"] is not None
+                            and not timing["response_logged"]
+                        ):
+                            last_mic_at = timing["last_mic_received_at"]
+                            assert isinstance(last_mic_at, float)
+                            latency_ms = (
+                                time.monotonic() - last_mic_at
+                            ) * 1000
+                            logger.info("voice last_mic_chunk")
+                            logger.info(
+                                "voice first_model_audio latency_ms=%.0f",
+                                latency_ms,
+                            )
+                            timing["response_logged"] = True
                 if getattr(content, "generation_complete", None) is True:
                     timing["response_logged"] = False
                     await websocket.send_json(
@@ -315,8 +329,10 @@ async def run_live_bridge(
             await websocket.send_json({"type": "status", "value": "listening"})
             playback_idle = asyncio.Event()
             caller_spoke = asyncio.Event()
-            timing = {
-                "last_mic_sent_at": None,
+            timing: dict[str, float | bool | None] = {
+                "first_mic_received_at": None,
+                "last_mic_received_at": None,
+                "input_transcription_logged": False,
                 "response_logged": False,
             }
             sender = asyncio.create_task(

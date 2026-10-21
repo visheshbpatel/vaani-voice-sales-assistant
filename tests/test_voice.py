@@ -221,7 +221,12 @@ def test_async_recording_consent_callback_is_awaited():
             stop,
             asyncio.Event(),
             asyncio.Event(),
-            {"last_mic_sent_at": None},
+            {
+                "first_mic_received_at": None,
+                "last_mic_received_at": None,
+                "input_transcription_logged": False,
+                "response_logged": False,
+            },
             on_recording_consent=save_consent,
         )
 

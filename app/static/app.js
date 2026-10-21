@@ -13,6 +13,7 @@ const leadCompanyEl = document.getElementById("lead-company");
 const leadContactEl = document.getElementById("lead-contact");
 const leadPreferredTimeEl = document.getElementById("lead-preferred-time");
 const leadContactConsent = document.getElementById("lead-contact-consent");
+const leadPrefillHintEl = document.getElementById("lead-prefill-hint");
 const refreshHistoryBtn = document.getElementById("refresh-history");
 const historyStatusEl = document.getElementById("history-status");
 const historyListEl = document.getElementById("history-list");
@@ -195,7 +196,13 @@ function renderLeadForm(call) {
   leadCompanyEl.value = call.lead_company || "";
   leadContactEl.value = call.lead_contact || "";
   leadPreferredTimeEl.value = call.lead_preferred_time || "";
-  leadContactConsent.checked = call.lead_contact_consent === true;
+  leadContactConsent.checked = false;
+  leadPrefillHintEl.hidden = ![
+    call.lead_name,
+    call.lead_company,
+    call.lead_contact,
+    call.lead_preferred_time,
+  ].some(Boolean);
   followUpEl.hidden = false;
 }
 
