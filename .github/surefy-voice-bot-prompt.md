@@ -39,8 +39,8 @@ Create ONLY these files, nothing else:
 2. README.md: title "Vaani", one-line description "Unofficial prototype: real-time AI voice
    sales assistant for Surefy (Sankar Group intern assignment). Not an official Surefy product.",
    and "Status: in development".
-3. .env.example with exactly: GEMINI_API_KEY, DATABASE_URL, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
-   R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ENDPOINT_URL (empty values).
+3. .env.example with exactly: GEMINI_API_KEY, DATABASE_URL, STORAGE_ENDPOINT_URL, STORAGE_REGION,
+   STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY, STORAGE_BUCKET_NAME (empty values).
 Reply in 2 lines.
 ```
 Then add `.cursor/rules/surefy.mdc` (Part A) and `docs/ACCEPTANCE.md` (Part B) yourself.
@@ -89,8 +89,8 @@ MediaRecorder, Neon PostgreSQL (SQLite OK for local dev only), Cloudflare R2 (bo
 No React, LiveKit, LangGraph, telephony, auth, CRM, or extra infrastructure.
 
 # Env var names (use exactly these everywhere)
-GEMINI_API_KEY, DATABASE_URL, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
-R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ENDPOINT_URL
+GEMINI_API_KEY, DATABASE_URL, STORAGE_ENDPOINT_URL, STORAGE_REGION,
+STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY, STORAGE_BUCKET_NAME
 
 # Layout
 app/{main,config,database}.py, app/models/call.py, app/schemas/call.py,

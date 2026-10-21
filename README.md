@@ -36,9 +36,9 @@ Copy [.env.example](.env.example) and set:
 - **Google AI Studio**: `GEMINI_API_KEY` is required for the Gemini Live API.
 - **Neon**: `DATABASE_URL` points to the PostgreSQL connection string. SQLite is
   the default only when no URL is configured.
-- **Cloudflare R2**: set all `R2_*` values for private recording storage.
-  Vaani stores only the R2 object key and metadata in the database, then
-  generates five-minute presigned playback URLs. Without R2 locally, recordings
+- **Supabase Storage (S3-compatible)**: recordings use Supabase Storage because Cloudflare R2 required a payment card.
+  Vaani stores only the storage object key and metadata in the database, then
+  generates five-minute presigned playback URLs. Without configured storage locally, recordings
   are stored in the ignored `recordings/` directory.
 
 Keep all secrets server-side. Do not put them in browser code. If the app is

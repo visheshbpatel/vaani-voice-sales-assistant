@@ -12,11 +12,11 @@ class Settings(BaseSettings):
     ALLOW_LOCAL_RECORDINGS: bool = True
     SUMMARY_MODEL: str = "gemini-3.8-flash"
     DATABASE_URL: str = "sqlite:///./vaani.db"
-    R2_ACCOUNT_ID: str = ""
-    R2_ACCESS_KEY_ID: str = ""
-    R2_SECRET_ACCESS_KEY: str = ""
-    R2_BUCKET_NAME: str = ""
-    R2_ENDPOINT_URL: str = ""
+    STORAGE_ENDPOINT_URL: str = ""
+    STORAGE_REGION: str = ""
+    STORAGE_ACCESS_KEY_ID: str = ""
+    STORAGE_SECRET_ACCESS_KEY: str = ""
+    STORAGE_BUCKET_NAME: str = ""
     RECORDING_MAX_BYTES: int = 25_000_000
 
 

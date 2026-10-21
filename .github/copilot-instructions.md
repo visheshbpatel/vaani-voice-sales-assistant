@@ -17,8 +17,8 @@ MediaRecorder, Neon PostgreSQL (SQLite OK for local dev only), Cloudflare R2 (bo
 No React, LiveKit, LangGraph, telephony, auth, CRM, or extra infrastructure.
 
 # Env var names (use exactly these everywhere)
-GEMINI_API_KEY, DATABASE_URL, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
-R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ENDPOINT_URL
+GEMINI_API_KEY, DATABASE_URL, STORAGE_ENDPOINT_URL, STORAGE_REGION,
+STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY, STORAGE_BUCKET_NAME
 
 # Layout
 app/{main,config,database}.py, app/models/call.py, app/schemas/call.py,

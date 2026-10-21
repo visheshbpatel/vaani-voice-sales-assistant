@@ -15,22 +15,25 @@ LOCAL_RECORDINGS = Path("recordings")
 
 def configured() -> bool:
     return bool(
-        settings.R2_ACCOUNT_ID
-        and settings.R2_ACCESS_KEY_ID
-        and settings.R2_SECRET_ACCESS_KEY
-        and settings.R2_BUCKET_NAME
-        and settings.R2_ENDPOINT_URL
+        settings.STORAGE_ENDPOINT_URL
+        and settings.STORAGE_REGION
+        and settings.STORAGE_ACCESS_KEY_ID
+        and settings.STORAGE_SECRET_ACCESS_KEY
+        and settings.STORAGE_BUCKET_NAME
     )
 
 
 def _client():
     return boto3.client(
         "s3",
-        endpoint_url=settings.R2_ENDPOINT_URL,
-        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
-        region_name="auto",
-        config=Config(signature_version="s3v4"),
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        aws_access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+        region_name=settings.STORAGE_REGION,
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
     )
 
 
@@ -41,13 +44,13 @@ async def save_recording(call_id: int, content: bytes, content_type: str) -> str
         try:
             await asyncio.to_thread(
                 _client().put_object,
-                Bucket=settings.R2_BUCKET_NAME,
+                Bucket=settings.STORAGE_BUCKET_NAME,
                 Key=object_key,
                 Body=content,
                 ContentType=content_type,
             )
         except (BotoCoreError, ClientError):
-            logger.exception("R2 recording upload failed.")
+            logger.exception("Storage recording upload failed.")
             raise RuntimeError("Recording storage is unavailable.")
         return object_key
 
@@ -69,9 +72,9 @@ async def signed_recording_url(object_key: str) -> str:
         return await asyncio.to_thread(
             _client().generate_presigned_url,
             "get_object",
-            Params={"Bucket": settings.R2_BUCKET_NAME, "Key": object_key},
+            Params={"Bucket": settings.STORAGE_BUCKET_NAME, "Key": object_key},
             ExpiresIn=300,
         )
     except (BotoCoreError, ClientError):
-        logger.exception("R2 recording URL generation failed.")
+        logger.exception("Storage recording URL generation failed.")
         raise RuntimeError("Recording playback is unavailable.")

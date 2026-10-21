@@ -10,13 +10,13 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: R2_ACCOUNT_ID
+      - key: STORAGE_ENDPOINT_URL
         sync: false
-      - key: R2_ACCESS_KEY_ID
+      - key: STORAGE_REGION
         sync: false
-      - key: R2_SECRET_ACCESS_KEY
+      - key: STORAGE_ACCESS_KEY_ID
         sync: false
-      - key: R2_BUCKET_NAME
+      - key: STORAGE_SECRET_ACCESS_KEY
         sync: false
-      - key: R2_ENDPOINT_URL
+      - key: STORAGE_BUCKET_NAME
         sync: false

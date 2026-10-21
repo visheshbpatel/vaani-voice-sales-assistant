@@ -338,11 +338,11 @@ def test_recording_requires_consent(db_session):
 
 def test_local_recording_key_supports_playback(tmp_path, monkeypatch):
     monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", tmp_path)
-    monkeypatch.setattr(recording_storage.settings, "R2_ACCOUNT_ID", "")
-    monkeypatch.setattr(recording_storage.settings, "R2_ACCESS_KEY_ID", "")
-    monkeypatch.setattr(recording_storage.settings, "R2_SECRET_ACCESS_KEY", "")
-    monkeypatch.setattr(recording_storage.settings, "R2_BUCKET_NAME", "")
-    monkeypatch.setattr(recording_storage.settings, "R2_ENDPOINT_URL", "")
+    monkeypatch.setattr(recording_storage.settings, "STORAGE_ENDPOINT_URL", "")
+    monkeypatch.setattr(recording_storage.settings, "STORAGE_REGION", "")
+    monkeypatch.setattr(recording_storage.settings, "STORAGE_ACCESS_KEY_ID", "")
+    monkeypatch.setattr(recording_storage.settings, "STORAGE_SECRET_ACCESS_KEY", "")
+    monkeypatch.setattr(recording_storage.settings, "STORAGE_BUCKET_NAME", "")
 
     object_key = asyncio.run(
         recording_storage.save_recording(7, b"audio", "audio/webm")
