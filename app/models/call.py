@@ -67,7 +67,6 @@ class Call(Base):
     lead_company: Mapped[str | None] = mapped_column(String(160))
     lead_contact: Mapped[str | None] = mapped_column(String(254))
     lead_preferred_time: Mapped[str | None] = mapped_column(String(120))
-    lead_contact_consent: Mapped[bool | None] = mapped_column(Boolean)
 
     @property
     def has_recording(self) -> bool:

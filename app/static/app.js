@@ -4,16 +4,8 @@ const startBtn = document.getElementById("start");
 const endBtn = document.getElementById("end");
 const durationEl = document.getElementById("duration");
 const transcriptEl = document.getElementById("transcript");
-const followUpEl = document.getElementById("follow-up");
 const resultEl = document.getElementById("result");
-const leadForm = document.getElementById("lead-form");
 const recordingConsent = document.getElementById("recording-consent");
-const leadNameEl = document.getElementById("lead-name");
-const leadCompanyEl = document.getElementById("lead-company");
-const leadContactEl = document.getElementById("lead-contact");
-const leadPreferredTimeEl = document.getElementById("lead-preferred-time");
-const leadContactConsent = document.getElementById("lead-contact-consent");
-const leadPrefillHintEl = document.getElementById("lead-prefill-hint");
 const refreshHistoryBtn = document.getElementById("refresh-history");
 const historyStatusEl = document.getElementById("history-status");
 const historyListEl = document.getElementById("history-list");
@@ -225,19 +217,22 @@ async function retrySummary(callId, button) {
   }
 }
 
-function renderLeadForm(call) {
-  leadNameEl.value = call.lead_name || "";
-  leadCompanyEl.value = call.lead_company || "";
-  leadContactEl.value = call.lead_contact || "";
-  leadPreferredTimeEl.value = call.lead_preferred_time || "";
-  leadContactConsent.checked = false;
-  leadPrefillHintEl.hidden = ![
-    call.lead_name,
-    call.lead_company,
-    call.lead_contact,
-    call.lead_preferred_time,
-  ].some(Boolean);
-  followUpEl.hidden = false;
+function renderLeadDetails(call) {
+  const fields = [
+    ["lead_name", "Name"],
+    ["lead_company", "Company"],
+    ["lead_contact", "Contact"],
+    ["lead_preferred_time", "Preferred time"],
+  ].filter(([key]) => call[key]);
+  if (!fields.length) return "";
+  return `
+    <div class="lead-details">
+      <h4>Lead details</h4>
+      ${fields.map(([key, label]) => `
+        <div><span>${escapeHtml(label)}</span><p>${escapeHtml(call[key])}</p></div>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderResult(call) {
@@ -254,8 +249,8 @@ function renderResult(call) {
     <p>${renderStatusBadge(displayStatus(call))}</p>
     ${summaryContent}
   `;
+  resultEl.innerHTML += renderLeadDetails(call);
   bindRetryButtons(resultEl);
-  renderLeadForm(call);
 }
 
 async function pollSummary(callId) {
@@ -301,8 +296,7 @@ async function renderHistoryDetail(call) {
     <h4>Summary</h4>
     <div>${renderSummary(call.summary_data)}</div>
     ${call.summary_generation_status !== "completed" ? retryButton(call.id) : ""}
-    ${call.lead_name || call.lead_company || call.lead_contact || call.lead_preferred_time ? `
-      <h4>Lead details</h4><p>${escapeHtml([call.lead_name, call.lead_company, call.lead_contact, call.lead_preferred_time].filter(Boolean).join(" · "))}</p>` : ""}
+    ${renderLeadDetails(call)}
     <h4>Transcript</h4>
     <div class="history-transcript">${renderHistoryTranscript(call.transcript)}</div>
     <h4>Recording</h4>
@@ -747,7 +741,6 @@ async function startCall() {
   recordingCallToken = null;
   recordingUploadPromise = null;
   recordingConsentSent = false;
-  followUpEl.hidden = true;
   resultEl.hidden = true;
   startBtn.disabled = true;
   endBtn.disabled = false;
@@ -849,31 +842,6 @@ async function uploadRecording() {
 startBtn.addEventListener("click", startCall);
 endBtn.addEventListener("click", endCall);
 refreshHistoryBtn.addEventListener("click", loadHistory);
-leadForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!currentCallId) return;
-  const fields = ["name", "company", "contact", "preferred_time"];
-  const fieldIds = {
-    name: "lead-name",
-    company: "lead-company",
-    contact: "lead-contact",
-    preferred_time: "lead-preferred-time",
-  };
-  const details = Object.fromEntries(fields.map((field) => {
-    const value = document.getElementById(fieldIds[field]).value.trim();
-    return [field, value || null];
-  }));
-  try {
-    await requestJson(`/api/calls/${currentCallId}/lead`, {
-      method: "PATCH",
-      headers: apiHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ ...details, consent: leadContactConsent.checked }),
-    }, "Could not save follow-up details.");
-    setError("");
-  } catch (error) {
-    setError(error.message);
-  }
-});
 
 historyUnlockButton.addEventListener("click", () => {
   try {

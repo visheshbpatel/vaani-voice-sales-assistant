@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.call import Call, SummaryGenerationStatus
-from app.schemas.call import CallHistory, CallListItem, LeadUpdate
+from app.schemas.call import CallHistory, CallListItem
 from app.security import require_history_access, valid_call_token, valid_password
 from app.services.call_summary import (
     SummaryGenerationError,
@@ -54,38 +54,6 @@ def get_call(
         raise HTTPException(status_code=503, detail="Call history is temporarily unavailable.")
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")
-    return call
-
-
-@router.patch("/{call_id}/lead", response_model=CallHistory)
-def update_lead(
-    call_id: int,
-    update: LeadUpdate,
-    x_history_password: str | None = Header(default=None),
-    x_call_token: str | None = Header(default=None),
-    db: Session = Depends(get_db),
-) -> Call:
-    require_history_access(
-        call_id, x_history_password, x_call_token, require_credentials=True
-    )
-    call = db.get(Call, call_id)
-    if call is None:
-        raise HTTPException(status_code=404, detail="Call record not found.")
-    call.lead_name = update.name
-    call.lead_company = update.company
-    call.lead_contact = update.contact
-    call.lead_preferred_time = update.preferred_time
-    call.lead_contact_consent = update.consent if any(
-        detail is not None
-        for detail in (update.name, update.company, update.contact, update.preferred_time)
-    ) else None
-    try:
-        db.commit()
-        db.refresh(call)
-    except SQLAlchemyError:
-        db.rollback()
-        logger.exception("Could not update call lead details.")
-        raise HTTPException(status_code=503, detail="Call history is temporarily unavailable.")
     return call
 
 

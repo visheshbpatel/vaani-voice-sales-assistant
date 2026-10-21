@@ -11,7 +11,6 @@ from app.config import settings
 from app.main import app
 from app.models.call import Call, SummaryGenerationStatus
 from app.routes.calls import create_call, finalize_call
-from app.schemas.call import LeadUpdate
 from app.security import make_call_token
 from app.services import recording_storage
 
@@ -57,7 +56,6 @@ def test_finalize_does_not_touch_lead_details(db_session):
         lead_company="Existing Company",
         lead_contact="existing@example.com",
         lead_preferred_time="Existing time",
-        lead_contact_consent=True,
     )
     db_session.add(call)
     db_session.commit()
@@ -83,25 +81,6 @@ def test_finalize_does_not_touch_lead_details(db_session):
     assert call.lead_company == "Existing Company"
     assert call.lead_contact == "existing@example.com"
     assert call.lead_preferred_time == "Existing time"
-    assert call.lead_contact_consent is True
-
-
-def test_lead_update_blank_details_become_none():
-    update = LeadUpdate(
-        name="  ",
-        company="\t",
-        contact="",
-        preferred_time=None,
-    )
-    assert update.name is None
-    assert update.company is None
-    assert update.contact is None
-    assert update.preferred_time is None
-
-
-def test_lead_update_requires_consent_for_details():
-    with pytest.raises(ValueError, match="Tick the consent box to save these details."):
-        LeadUpdate(name="Prospect")
 
 
 def test_status_rejects_value_outside_backend_enum(db_session):
@@ -111,7 +90,7 @@ def test_status_rejects_value_outside_backend_enum(db_session):
         db_session.commit()
 
 
-def test_history_retrieval_and_lead_patch(db_session):
+def test_history_retrieval_and_lead_patch_is_removed(db_session):
     call = create_call(db_session)
     with TestClient(app) as client:
         response = client.get("/api/calls")
@@ -127,32 +106,8 @@ def test_history_retrieval_and_lead_patch(db_session):
             "recording_consent",
             "has_recording",
         }
-        response = client.patch(
-            f"/api/calls/{call.id}/lead",
-            headers={"X-Call-Token": make_call_token(call.id)},
-            json={
-                "name": "A prospect",
-                "company": "Acme",
-                "contact": "person@example.com",
-                "preferred_time": "Tomorrow morning",
-                "consent": True,
-            },
-        )
-        assert response.status_code == 200
-        assert response.json()["lead_company"] == "Acme"
-
-
-def test_empty_lead_patch_clears_consent(db_session):
-    call = create_call(db_session)
-    with TestClient(app) as client:
-        response = client.patch(
-            f"/api/calls/{call.id}/lead",
-            headers={"X-Call-Token": make_call_token(call.id)},
-            json={"name": "  ", "consent": False},
-        )
-    assert response.status_code == 200
-    assert response.json()["lead_name"] is None
-    assert response.json()["lead_contact_consent"] is None
+        response = client.patch(f"/api/calls/{call.id}/lead", json={})
+    assert response.status_code == 404
 
 
 def test_history_password_protects_reads_and_writes_without_auth_header(db_session, monkeypatch):
@@ -162,13 +117,10 @@ def test_history_password_protects_reads_and_writes_without_auth_header(db_sessi
         for method, url in (
             ("get", "/api/calls"),
             ("get", f"/api/calls/{call.id}"),
-            ("patch", f"/api/calls/{call.id}/lead"),
             ("post", f"/api/calls/{call.id}/summary/retry"),
         ):
             response = (
-                client.patch(url, json={})
-                if method == "patch"
-                else getattr(client, method)(url)
+                getattr(client, method)(url)
             )
             assert response.status_code == 401
             assert "www-authenticate" not in response.headers
@@ -182,13 +134,7 @@ def test_call_token_allows_call_specific_operations(db_session, monkeypatch):
         response = client.get(
             f"/api/calls/{call.id}", headers={"X-Call-Token": token}
         )
-        update = client.patch(
-            f"/api/calls/{call.id}/lead",
-            headers={"X-Call-Token": token},
-            json={"name": "Prospect", "consent": True},
-        )
     assert response.status_code == 200
-    assert update.status_code == 200
 
 
 def test_recording_upload_normalizes_type_rejects_duplicate_and_size(
@@ -310,16 +256,6 @@ def test_call_list_is_limited_and_retry_rejects_active_call(db_session):
     assert response.status_code == 200
     assert len(response.json()) == 2
     assert retry.status_code == 409
-
-
-def test_lead_patch_rejects_overlong_input(db_session):
-    call = create_call(db_session)
-    with TestClient(app) as client:
-        response = client.patch(
-            f"/api/calls/{call.id}/lead",
-            json={"name": "x" * 121},
-        )
-    assert response.status_code == 422
 
 
 def test_recording_requires_consent(db_session):

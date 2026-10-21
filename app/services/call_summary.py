@@ -2,9 +2,11 @@ import json
 import logging
 from typing import Any
 
+import httpx
 from google import genai
+from google.genai import errors
 from google.genai import types
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config import settings
 from app.models.call import CallStatus
@@ -13,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class CallSummary(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     business_use_case: str = ""
     needs: list[str] = Field(default_factory=list)
     modules_discussed: list[str] = Field(default_factory=list)
@@ -62,6 +62,12 @@ def parse_summary_response(response: Any) -> CallSummary:
         raise SummaryGenerationError("Gemini returned malformed summary JSON.") from exc
 
 
+def _is_retryable_generation_error(exc: Exception) -> bool:
+    return isinstance(exc, (TimeoutError, httpx.TimeoutException)) or (
+        isinstance(exc, errors.APIError) and 500 <= exc.code < 600
+    )
+
+
 def generate_summary(transcript: list[dict[str, Any]]) -> CallSummary:
     if not has_customer_speech(transcript):
         return CallSummary(
@@ -86,23 +92,41 @@ def generate_summary(transcript: list[dict[str, Any]]) -> CallSummary:
         "declined; Demo Requested means the customer explicitly requested a demo; No Response "
         "means no customer speech was captured. choose the most conservative status. "
         "Include lead_name, lead_company, lead_contact, and lead_preferred_time only when the "
-        "customer explicitly said them; otherwise use an empty string.\n\n"
+        "customer explicitly said them; otherwise use an empty string. Read the transcript "
+        "carefully for the customer's name, company, phone number or email, and preferred "
+        "time for follow-up, including spoken digits and spelled-out email addresses. "
+        "Normalize phone numbers to digits only, and normalize emails by converting spoken "
+        "\"at\" and \"dot\" to @ and .; still use only what the customer explicitly said.\n\n"
         f"Transcript:\n{conversation}"
     )
     try:
         client = genai.Client(
             api_key=settings.GEMINI_API_KEY,
-            http_options=types.HttpOptions(timeout=30),
+            # google-genai expects this timeout in milliseconds.
+            http_options=types.HttpOptions(timeout=90000),
         )
-        response = client.models.generate_content(
-            model=settings.SUMMARY_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=CallSummary.model_json_schema(),
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=CallSummary,
+            max_output_tokens=1500,
+            temperature=0.2,
+            thinking_config=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.MINIMAL,
             ),
         )
-        return parse_summary_response(response)
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=settings.SUMMARY_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+                return parse_summary_response(response)
+            except Exception as exc:
+                if attempt == 0 and _is_retryable_generation_error(exc):
+                    logger.warning("Retrying call summary generation after a transient error.")
+                    continue
+                raise
     except SummaryGenerationError:
         raise
     except Exception as exc:
