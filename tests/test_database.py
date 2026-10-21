@@ -9,11 +9,11 @@ from sqlalchemy.exc import StatementError
 from app.main import app
 from app.models.call import Call, SummaryGenerationStatus
 from app.routes.calls import create_call, finalize_call
-from app.routes.voice import _merge_transcript_text
 from app.services import recording_storage
 from app import database
 from app.config import settings
 from app.security import make_call_token
+from app.schemas.call import LeadUpdate
 
 
 def test_database_url_normalizes_postgres_and_default_path(monkeypatch):
@@ -49,9 +49,18 @@ def test_finalize_does_not_generate_summary(db_session, monkeypatch):
     assert call.ended_at is not None
 
 
-def test_finalize_extracts_confirmed_lead_details(db_session):
+def test_finalize_does_not_touch_lead_details(db_session):
     started = datetime.now(timezone.utc)
-    call = create_call(db_session)
+    call = Call(
+        started_at=started,
+        lead_name="Existing Name",
+        lead_company="Existing Company",
+        lead_contact="existing@example.com",
+        lead_preferred_time="Existing time",
+        lead_contact_consent=True,
+    )
+    db_session.add(call)
+    db_session.commit()
     finalize_call(
         db_session,
         call.id,
@@ -70,67 +79,29 @@ def test_finalize_extracts_confirmed_lead_details(db_session):
     )
     db_session.refresh(call)
     assert call.ended_at is not None
-    assert call.summary_generation_status.value == "pending"
+    assert call.lead_name == "Existing Name"
+    assert call.lead_company == "Existing Company"
+    assert call.lead_contact == "existing@example.com"
+    assert call.lead_preferred_time == "Existing time"
+    assert call.lead_contact_consent is True
 
 
-def test_finalize_extracts_details_from_incremental_transcript(db_session):
-    started = datetime.now(timezone.utc)
-    call = create_call(db_session)
-    readback = _merge_transcript_text(
-        "Your name is Vishesh Patel, the company is Samsung, your",
-        "email is visheshpatel599@gmail.com, and you'd prefer the demo tomorrow "
-        "morning at 11 AM. Is that all correct?",
+def test_lead_update_blank_details_become_none():
+    update = LeadUpdate(
+        name="  ",
+        company="\t",
+        contact="",
+        preferred_time=None,
     )
-    finalize_call(
-        db_session,
-        call.id,
-        [
-            {
-                "speaker": "assistant",
-                "text": readback,
-                "timestamp": started.isoformat(),
-            }
-        ],
-        started,
-    )
-    assert call.ended_at is not None
+    assert update.name is None
+    assert update.company is None
+    assert update.contact is None
+    assert update.preferred_time is None
 
 
-def test_finalize_extracts_answers_after_short_detail_prompts(db_session):
-    started = datetime.now(timezone.utc)
-    call = create_call(db_session)
-    finalize_call(
-        db_session,
-        call.id,
-        [
-            {"speaker": "assistant", "text": "name?", "timestamp": started.isoformat()},
-            {"speaker": "customer", "text": "विशेष पटेल", "timestamp": started.isoformat()},
-            {"speaker": "assistant", "text": "company?", "timestamp": started.isoformat()},
-            {"speaker": "customer", "text": "Samsung", "timestamp": started.isoformat()},
-            {
-                "speaker": "assistant",
-                "text": "or email address?",
-                "timestamp": started.isoformat(),
-            },
-            {
-                "speaker": "customer",
-                "text": "visheshpatel599@gmail.com",
-                "timestamp": started.isoformat(),
-            },
-            {
-                "speaker": "assistant",
-                "text": "preferred time?",
-                "timestamp": started.isoformat(),
-            },
-            {
-                "speaker": "customer",
-                "text": "tomorrow morning 11",
-                "timestamp": started.isoformat(),
-            },
-        ],
-        started,
-    )
-    assert call.ended_at is not None
+def test_lead_update_requires_consent_for_details():
+    with pytest.raises(ValueError, match="Tick the consent box to save these details."):
+        LeadUpdate(name="Prospect")
 
 
 def test_status_rejects_value_outside_backend_enum(db_session):
@@ -171,6 +142,19 @@ def test_history_retrieval_and_lead_patch(db_session):
         assert response.json()["lead_company"] == "Acme"
 
 
+def test_empty_lead_patch_clears_consent(db_session):
+    call = create_call(db_session)
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/calls/{call.id}/lead",
+            headers={"X-Call-Token": make_call_token(call.id)},
+            json={"name": "  ", "consent": False},
+        )
+    assert response.status_code == 200
+    assert response.json()["lead_name"] is None
+    assert response.json()["lead_contact_consent"] is None
+
+
 def test_history_password_protects_reads_and_writes_without_auth_header(db_session, monkeypatch):
     monkeypatch.setattr(settings, "HISTORY_PASSWORD", "history-secret")
     call = create_call(db_session)
@@ -201,7 +185,7 @@ def test_call_token_allows_call_specific_operations(db_session, monkeypatch):
         update = client.patch(
             f"/api/calls/{call.id}/lead",
             headers={"X-Call-Token": token},
-            json={"name": "Prospect"},
+            json={"name": "Prospect", "consent": True},
         )
     assert response.status_code == 200
     assert update.status_code == 200

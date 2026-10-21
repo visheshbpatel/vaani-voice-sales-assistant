@@ -1,5 +1,4 @@
 import logging
-import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -23,77 +22,6 @@ from app.services.call_summary import (
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 logger = logging.getLogger(__name__)
-
-
-def _extract_lead_details(
-    transcript: list[dict[str, str]],
-) -> dict[str, str | None]:
-    assistant_text = " ".join(
-        entry["text"]
-        for entry in transcript
-        if entry.get("speaker") == "assistant" and entry.get("text")
-    )
-    name = re.search(
-        r"(?:your|the) name is\s+(.+?)(?=,\s*(?:the )?company is|,\s*company is)",
-        assistant_text,
-        re.IGNORECASE,
-    )
-    company = re.search(
-        r"(?:the )?company is\s+(.+?)(?=,\s*(?:your )?(?:email|phone)|,\s*and\s+(?:your )?(?:email|phone))",
-        assistant_text,
-        re.IGNORECASE,
-    )
-    contact = re.search(r"[^\s,;]+@[^\s,;]+\.[^\s,;]+", assistant_text)
-    preferred = re.search(
-        r"(?:you.?d prefer|preferred time is|prefer(?:red)? time(?: would be)? is?)"
-        r"\s+(.+?)(?=\.\s|,\s*is that|\?|$)",
-        assistant_text,
-        re.IGNORECASE,
-    )
-    details: dict[str, str | None] = {
-        "name": name.group(1).strip() if name else None,
-        "company": company.group(1).strip() if company else None,
-        "contact": contact.group(0) if contact else None,
-        "preferred_time": (
-            preferred.group(1).replace("the demo ", "", 1).strip(" .")
-            if preferred
-            else None
-        ),
-    }
-    expected: str | None = None
-    for entry in transcript:
-        text = (entry.get("text") or "").strip()
-        if not text:
-            continue
-        if entry.get("speaker") == "assistant":
-            lowered = text.lower()
-            if "full name" in lowered or lowered.endswith("name?"):
-                expected = "name"
-            elif "company" in lowered:
-                expected = "company"
-            elif "phone" in lowered or "email" in lowered:
-                expected = "contact"
-            elif "preferred time" in lowered or "best time" in lowered:
-                expected = "preferred_time"
-            elif (
-                details["contact"]
-                and "demo" in lowered
-                and lowered.endswith("?")
-            ):
-                expected = "preferred_time"
-            continue
-        if entry.get("speaker") != "customer" or expected is None:
-            continue
-        answer = text.strip(" .!?")
-        if expected == "contact":
-            match = re.search(r"[^\s,;]+@[^\s,;]+\.[^\s,;]+", answer)
-            if not details[expected]:
-                details[expected] = match.group(0) if match else answer
-        elif not details[expected]:
-            details[expected] = answer
-        expected = None
-    return details
-
 
 @router.get("", response_model=list[CallListItem])
 def list_calls(
@@ -147,7 +75,10 @@ def update_lead(
     call.lead_company = update.company
     call.lead_contact = update.contact
     call.lead_preferred_time = update.preferred_time
-    call.lead_contact_consent = update.consent
+    call.lead_contact_consent = update.consent if any(
+        detail is not None
+        for detail in (update.name, update.company, update.contact, update.preferred_time)
+    ) else None
     try:
         db.commit()
         db.refresh(call)
@@ -291,7 +222,6 @@ def finalize_call(
     call_id: int,
     transcript: list[dict[str, str]],
     started_at: datetime | None = None,
-    lead_details: dict[str, str] | None = None,
 ) -> None:
     call = db.get(Call, call_id)
     if call is None:

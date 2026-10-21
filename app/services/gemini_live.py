@@ -71,7 +71,6 @@ async def _browser_to_gemini(
     caller_spoke: asyncio.Event,
     timing: dict[str, float | None],
     on_recording_consent=None,
-    on_lead_details=None,
 ) -> str:
     try:
         while not stop.is_set():
@@ -89,8 +88,6 @@ async def _browser_to_gemini(
                     result = on_recording_consent(bool(payload.get("value")))
                     if inspect.isawaitable(result):
                         await result
-                if payload.get("type") == "lead_details" and on_lead_details:
-                    on_lead_details(payload.get("value"))
                 if payload.get("type") == "playback_idle":
                     playback_idle.set()
                 continue
@@ -300,7 +297,6 @@ async def run_live_bridge(
     on_transcript=None,
     send_connecting: bool = True,
     on_recording_consent=None,
-    on_lead_details=None,
 ) -> None:
     if not settings.GEMINI_API_KEY:
         await websocket.send_json(
@@ -332,7 +328,6 @@ async def run_live_bridge(
                     caller_spoke,
                     timing,
                     on_recording_consent,
-                    on_lead_details,
                 )
             )
             receiver = asyncio.create_task(

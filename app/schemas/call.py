@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.call import CallStatus
 
@@ -64,12 +64,19 @@ class LeadUpdate(BaseModel):
     preferred_time: str | None = Field(default=None, max_length=120)
     consent: bool = False
 
-    @field_validator("name", "company", "contact", "preferred_time")
+    @field_validator("name", "company", "contact", "preferred_time", mode="before")
     @classmethod
-    def trim_and_reject_blank(cls, value: str | None) -> str | None:
+    def trim_blank_to_none(cls, value: str | None) -> str | None:
         if value is None:
             return None
         value = value.strip()
-        if not value:
-            raise ValueError("Details cannot be blank.")
-        return value
+        return value or None
+
+    @model_validator(mode="after")
+    def require_consent_for_details(self) -> "LeadUpdate":
+        if not self.consent and any(
+            detail is not None
+            for detail in (self.name, self.company, self.contact, self.preferred_time)
+        ):
+            raise ValueError("Tick the consent box to save these details.")
+        return self

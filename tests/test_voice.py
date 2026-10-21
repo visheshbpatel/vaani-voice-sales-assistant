@@ -14,8 +14,6 @@ from app.services import gemini_live
 from app.services.product_knowledge import GREETING_TRIGGER, IDLE_NUDGE_TRIGGER
 from app.config import settings
 from app.security import make_call_token
-
-
 class FakeSession:
     def __init__(
         self,
@@ -594,26 +592,3 @@ def test_duplicate_session_rejected(monkeypatch):
                     "type": "error",
                     "message": "A call is already in progress.",
                 }
-
-
-def test_call_end_persists_browser_lead_details(db_session, monkeypatch):
-    session = FakeSession([], hang=asyncio.Event())
-    monkeypatch.setattr(gemini_live, "live_connect", lambda api_key, config: session)
-    details = {
-        "name": "Vishesh Patel",
-        "company": "Samsung",
-        "contact": "visheshpatel599@gmail.com",
-        "preferred_time": "tomorrow morning at 11 AM",
-    }
-
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/voice") as ws:
-            _receive_startup(ws)
-            ws.send_json({"type": "lead_details", "value": details})
-            ws.send_json({"type": "end"})
-
-    calls = list(db_session.scalars(select(Call)))
-    assert len(calls) == 1
-    call = calls[0]
-    assert call.ended_at is not None
-    assert call.transcript == []
