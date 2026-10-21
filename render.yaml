@@ -2,13 +2,21 @@ services:
   - type: web
     name: vaani
     runtime: python
-    buildCommand: pip install .
-    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: ALLOW_LOCAL_RECORDINGS
+        value: "false"
+      - key: APP_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: DATABASE_URL
+      - key: HISTORY_PASSWORD
         sync: false
       - key: STORAGE_ENDPOINT_URL
         sync: false
