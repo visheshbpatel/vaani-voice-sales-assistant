@@ -466,6 +466,38 @@ def test_idle_nudge_waits_for_playback_and_closing_text_disables_it():
         gemini_live.IDLE_NUDGE_SECONDS = original
 
 
+def test_idle_nudge_cancellation_cleans_up_wait_tasks(monkeypatch):
+    created_tasks = []
+    create_task = gemini_live.asyncio.create_task
+
+    def track_task(coroutine):
+        task = create_task(coroutine)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(gemini_live.asyncio, "create_task", track_task)
+
+    async def scenario():
+        task = create_task(
+            gemini_live._idle_nudge_loop(
+                object(),
+                asyncio.Event(),
+                asyncio.Event(),
+                asyncio.Event(),
+                {"count": 0},
+                lambda: False,
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert len(created_tasks) == 2
+    assert all(task.done() for task in created_tasks)
+
+
 def test_receive_loop_forwards_multiple_turns_and_stays_open(monkeypatch):
     hang = asyncio.Event()
     session = FakeSession(

@@ -87,6 +87,7 @@ async function requestJson(url, options = {}, fallbackMessage = "Request failed.
 // Shared UI helpers
 function setStatus(value) {
   statusEl.textContent = value;
+  statusEl.dataset.status = value;
 }
 
 function finalizeTranscriptMessage() {
@@ -306,6 +307,7 @@ async function pollSummary(callId) {
   const isCurrentPoll = () =>
     pollGeneration === summaryPollGeneration && String(currentCallId) === String(callId);
   for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (!isCurrentPoll()) return;
     try {
       const call = await requestJson(
         `/api/calls/${callId}`,
@@ -323,7 +325,8 @@ async function pollSummary(callId) {
       return;
     }
     await new Promise((resolve) => {
-      summaryPollTimer = setTimeout(resolve, 2000);
+      const delay = Math.min(2000 * 2 ** Math.min(attempt, 3), 15000);
+      summaryPollTimer = setTimeout(resolve, delay);
     });
     summaryPollTimer = null;
   }
@@ -890,18 +893,25 @@ async function uploadRecording() {
     uploadGeneration === callGeneration &&
     String(recordingCallId) === String(uploadCallId);
   const verifySaved = async () => {
-    try {
-      const call = await requestJson(`/api/calls/${uploadCallId}`, {
-        headers: uploadCallToken ? { "X-Call-Token": uploadCallToken } : {},
-      }, "Could not verify recording status.");
-      if (call.has_recording) return true;
-      await requestJson(`/api/calls/${uploadCallId}/recording`, {
-        headers: uploadHeaders,
-      }, "Recording is not available yet.");
-      return true;
-    } catch (_error) {
-      return false;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        const call = await requestJson(`/api/calls/${uploadCallId}`, {
+          headers: uploadCallToken ? { "X-Call-Token": uploadCallToken } : {},
+        }, "Could not verify recording status.");
+        if (call.has_recording) {
+          await requestJson(`/api/calls/${uploadCallId}/recording`, {
+            headers: uploadHeaders,
+          }, "Recording is not available yet.");
+          return "confirmed";
+        }
+      } catch (_error) {
+        // A timed-out upload can finish committing after the client aborts.
+      }
+      if (attempt < 5) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     }
+    return "pending";
   };
   try {
     await requestJson(`/api/calls/${uploadCallId}/recording`, {
@@ -912,15 +922,17 @@ async function uploadRecording() {
     }, "The recording could not be saved.");
   } catch (error) {
     if (error.name === "AbortError") {
-      if (await verifySaved()) return;
+      const confirmation = await verifySaved();
+      if (confirmation === "confirmed") return;
       if (isCurrentUpload()) {
-        setError("The call ended, but recording persistence could not be confirmed before the client timeout. Check call history before retrying.");
+        setError("The call ended and recording upload is still being confirmed. Check call history shortly before retrying.");
       }
       return;
     }
-    if (await verifySaved()) return;
+    const confirmation = await verifySaved();
+    if (confirmation === "confirmed") return;
     if (isCurrentUpload()) {
-      setError(`The call ended, but its recording could not be saved: ${error.message}`);
+      setError(`The call ended, but recording persistence is still being confirmed: ${error.message}`);
     }
   } finally {
     clearTimeout(timeout);

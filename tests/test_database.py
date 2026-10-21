@@ -1,10 +1,12 @@
 import asyncio
+import hashlib
 from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import StatementError
+from sqlalchemy.orm import Session
 
 from app import database
 from app.config import settings
@@ -203,6 +205,140 @@ def test_recording_upload_rejects_different_duplicate(db_session, monkeypatch):
             f"/api/calls/{call.id}/recording", content=b"two", headers=headers
         )
     assert response.status_code == 409
+
+
+def test_recording_upload_persists_metadata_and_playback_url(
+    db_session, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", tmp_path)
+    call = create_call(db_session)
+    call.recording_consent = True
+    db_session.commit()
+    headers = {
+        "Content-Type": "audio/webm",
+        "X-Call-Token": make_call_token(call.id),
+    }
+
+    with TestClient(app) as client:
+        response = client.put(
+            f"/api/calls/{call.id}/recording",
+            content=b"audio",
+            headers=headers,
+        )
+        playback = client.get(f"/api/calls/{call.id}/recording", headers=headers)
+
+    db_session.refresh(call)
+    assert response.status_code == 200
+    assert call.recording_object_key is not None
+    assert call.recording_content_type == "audio/webm"
+    assert call.recording_sha256 == hashlib.sha256(b"audio").hexdigest()
+    assert playback.status_code == 200
+    assert playback.json() == {"url": f"/api/calls/local/{call.recording_object_key}"}
+
+
+def test_recording_playback_rejects_missing_metadata_and_object(
+    db_session, monkeypatch, tmp_path
+):
+    call = create_call(db_session)
+    headers = {"X-Call-Token": make_call_token(call.id)}
+    with TestClient(app) as client:
+        missing_metadata = client.get(
+            f"/api/calls/{call.id}/recording", headers=headers
+        )
+    assert missing_metadata.status_code == 404
+
+    call.recording_consent = True
+    call.recording_object_key = "call-1/missing.webm"
+    call.recording_content_type = "audio/webm"
+    db_session.commit()
+    monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", tmp_path)
+    with TestClient(app) as client:
+        missing_object = client.get(
+            f"/api/calls/{call.id}/recording", headers=headers
+        )
+    assert missing_object.status_code == 503
+
+
+def test_recording_playback_reports_storage_failure(
+    db_session, monkeypatch, tmp_path
+):
+    call = create_call(db_session)
+    call.recording_consent = True
+    call.recording_object_key = "call-1/audio.webm"
+    call.recording_content_type = "audio/webm"
+    db_session.commit()
+    monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", tmp_path)
+    monkeypatch.setattr(
+        "app.routes.calls.signed_recording_url",
+        lambda _object_key: (_ for _ in ()).throw(
+            recording_storage.RecordingStorageError("temporary storage failure")
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/calls/{call.id}/recording",
+            headers={"X-Call-Token": make_call_token(call.id)},
+        )
+
+    assert response.status_code == 503
+
+
+def test_existing_recording_without_digest_remains_playable(
+    db_session, monkeypatch, tmp_path
+):
+    object_key = "call-1/existing.webm"
+    path = tmp_path / object_key
+    path.parent.mkdir()
+    path.write_bytes(b"existing")
+    monkeypatch.setattr(recording_storage, "LOCAL_RECORDINGS", tmp_path)
+    call = create_call(db_session)
+    call.recording_consent = True
+    call.recording_object_key = object_key
+    call.recording_content_type = "audio/webm"
+    call.recording_sha256 = None
+    db_session.commit()
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/calls/{call.id}/recording",
+            headers={"X-Call-Token": make_call_token(call.id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"url": f"/api/calls/local/{object_key}"}
+
+
+def test_recording_commit_failure_cleans_up_uploaded_object(db_session, monkeypatch):
+    call = create_call(db_session)
+    call.recording_consent = True
+    db_session.commit()
+    deleted = []
+
+    async def save_recording(*args):
+        return "call-1/audio.webm"
+
+    async def delete_recording(object_key):
+        deleted.append(object_key)
+
+    def fail_commit(_session):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("app.routes.calls.save_recording", save_recording)
+    monkeypatch.setattr("app.routes.calls.delete_recording", delete_recording)
+    monkeypatch.setattr(Session, "commit", fail_commit)
+    with TestClient(app) as client:
+        response = client.put(
+            f"/api/calls/{call.id}/recording",
+            content=b"audio",
+            headers={
+                "Content-Type": "audio/webm",
+                "X-Call-Token": make_call_token(call.id),
+            },
+        )
+
+    assert response.status_code == 503
+    assert deleted == ["call-1/audio.webm"]
 
 
 def test_recording_upload_accepts_call_token_and_rejects_wrong_token(

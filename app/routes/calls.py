@@ -3,7 +3,6 @@ import hashlib
 import logging
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -21,7 +20,9 @@ from app.services.call_summary import (
     generate_summary,
     summary_json,
 )
+from app.services import recording_storage
 from app.services.recording_storage import (
+    RecordingStorageError,
     delete_recording,
     save_recording,
     signed_recording_url,
@@ -222,7 +223,7 @@ async def upload_recording(call_id: int, request: Request, db: Session = Depends
 def get_local_recording(object_key: str):
     if not settings.ALLOW_LOCAL_RECORDINGS or settings.HISTORY_PASSWORD:
         raise HTTPException(status_code=404, detail="Recording is unavailable.")
-    root = Path("recordings").resolve()
+    root = recording_storage.LOCAL_RECORDINGS.resolve()
     path = (root / object_key).resolve()
     if root not in path.parents or not path.is_file():
         raise HTTPException(status_code=404, detail="Recording is unavailable.")
@@ -240,14 +241,37 @@ async def get_recording_url(
         request.headers.get("x-history-password"),
         request.headers.get("x-call-token"),
     )
-    call = db.get(Call, call_id)
+    try:
+        call = db.get(Call, call_id)
+    except SQLAlchemyError:
+        logger.exception("Could not retrieve recording metadata.")
+        raise HTTPException(
+            status_code=503, detail="Recording metadata is temporarily unavailable."
+        )
     if call is None:
         raise HTTPException(status_code=404, detail="Call record not found.")
     if not call.recording_object_key:
+        logger.warning("Recording metadata is missing for call_id=%d.", call_id)
         raise HTTPException(status_code=404, detail="Recording is unavailable.")
     try:
         return {"url": await signed_recording_url(call.recording_object_key)}
+    except RecordingStorageError as exc:
+        if exc.missing_object:
+            logger.warning(
+                "Recording object is missing for call_id=%d; key=%s.",
+                call_id,
+                call.recording_object_key,
+            )
+        else:
+            logger.exception(
+                "Recording storage error while preparing playback for call_id=%d.",
+                call_id,
+            )
+        raise HTTPException(status_code=503, detail="Recording playback is unavailable.")
     except RuntimeError:
+        logger.exception(
+            "Recording playback configuration error for call_id=%d.", call_id
+        )
         raise HTTPException(status_code=503, detail="Recording playback is unavailable.")
 
 

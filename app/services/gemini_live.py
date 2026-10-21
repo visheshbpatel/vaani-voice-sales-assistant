@@ -273,16 +273,15 @@ async def _idle_nudge_loop(
 ) -> None:
     if stop.is_set():
         return
+    child_tasks: list[asyncio.Task[bool]] = []
     try:
         playback_wait = asyncio.create_task(playback_idle.wait())
         caller_wait = asyncio.create_task(caller_spoke.wait())
-        done, pending = await asyncio.wait(
+        child_tasks.extend((playback_wait, caller_wait))
+        done, _pending = await asyncio.wait(
             {playback_wait, caller_wait},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
         if caller_wait in done:
             return
         if stop.is_set():
@@ -298,6 +297,11 @@ async def _idle_nudge_loop(
             nudge_state["count"] += 1
             nudge_state["last_sent_at"] = time.monotonic()
             logger.info("Idle nudge sent")
+    finally:
+        unfinished = [task for task in child_tasks if not task.done()]
+        for task in unfinished:
+            task.cancel()
+        await asyncio.gather(*unfinished, return_exceptions=True)
 
 
 async def _send_duration(
@@ -367,25 +371,29 @@ async def run_live_bridge(
             duration_task = asyncio.create_task(
                 _duration_loop(websocket, started_at, stop)
             )
-            done, pending = await asyncio.wait(
-                {sender, receiver},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            reason = next(iter(done)).result()
-            stop.set()
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(sender, receiver, return_exceptions=True)
-            duration_task.cancel()
-            await asyncio.gather(duration_task, return_exceptions=True)
-            if reason != "client_disconnect":
-                await _send_duration(websocket, started_at, stop, final=True)
-            if reason != "client_disconnect" and not transcript_seen.is_set():
-                await websocket.send_json(
-                    {
-                        "type": "transcript_unavailable",
-                        "message": "Live transcription was unavailable for this call.",
-                    }
+            try:
+                done, _pending = await asyncio.wait(
+                    {sender, receiver},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                reason = next(iter(done)).result()
+                stop.set()
+                if reason != "client_disconnect":
+                    await _send_duration(websocket, started_at, stop, final=True)
+                if reason != "client_disconnect" and not transcript_seen.is_set():
+                    await websocket.send_json(
+                        {
+                            "type": "transcript_unavailable",
+                            "message": "Live transcription was unavailable for this call.",
+                        }
+                    )
+            finally:
+                stop.set()
+                for task in (sender, receiver, duration_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(
+                    sender, receiver, duration_task, return_exceptions=True
                 )
     except (WebSocketDisconnect, WebSocketDisconnected):
         return

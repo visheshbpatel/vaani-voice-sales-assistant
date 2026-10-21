@@ -228,6 +228,67 @@ def test_retry_updates_same_record(db_session, monkeypatch):
     assert response.json()["summary_generation_status"] == "completed"
 
 
+def test_pending_summary_retries_when_no_generation_is_active(db_session, monkeypatch):
+    call = create_call(db_session)
+    finalize_call(db_session, call.id, [{"speaker": "customer", "text": "Hello"}])
+    call.summary_generation_status = SummaryGenerationStatus.PENDING
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.routes.calls.generate_summary",
+        lambda transcript: call_summary.CallSummary.model_validate(_valid_summary()),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/calls/{call.id}/summary/retry",
+            headers={"X-Call-Token": make_call_token(call.id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["summary_generation_status"] == "completed"
+
+
+def test_summary_retry_returns_conflict_while_generation_lock_is_held(db_session):
+    call = create_call(db_session)
+    finalize_call(db_session, call.id, [{"speaker": "customer", "text": "Hello"}])
+    lock = calls_route._summary_lock(call.id)
+    assert lock.acquire()
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/calls/{call.id}/summary/retry",
+                headers={"X-Call-Token": make_call_token(call.id)},
+            )
+    finally:
+        lock.release()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Summary generation is already in progress."
+
+
+def test_summary_retry_returns_failed_state_after_generation_error(
+    db_session, monkeypatch
+):
+    call = create_call(db_session)
+    finalize_call(db_session, call.id, [{"speaker": "customer", "text": "Hello"}])
+    monkeypatch.setattr(
+        "app.routes.calls.generate_summary",
+        lambda transcript: (_ for _ in ()).throw(
+            call_summary.SummaryGenerationError("Gemini unavailable")
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/calls/{call.id}/summary/retry",
+            headers={"X-Call-Token": make_call_token(call.id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["summary_generation_status"] == "failed"
+    assert response.json()["status"] is None
+
+
 def test_summary_prefills_empty_lead_columns_without_consent(db_session, monkeypatch):
     call = create_call(db_session)
     call.transcript = [{"speaker": "customer", "text": "My name is Ada"}]

@@ -5,83 +5,110 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vaani | Voice sales assistant</title>
     <meta name="description" content="Talk with Vaani, an unofficial AI voice sales assistant prototype for Surefy." />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23286b68'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-family='Arial,sans-serif' font-size='36' font-weight='700' fill='white'%3EV%3C/text%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%236f8cff'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-family='Arial,sans-serif' font-size='36' font-weight='700' fill='white'%3EV%3C/text%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
+    <div class="ambient-glow ambient-glow-left" aria-hidden="true"></div>
+    <div class="ambient-glow ambient-glow-right" aria-hidden="true"></div>
     <main class="app-shell">
       <header class="app-header">
-        <div class="brand-mark" aria-hidden="true">V</div>
-        <div>
-          <p class="eyebrow">Voice sales assistant</p>
-          <h1>Vaani</h1>
+        <a class="brand" href="/" aria-label="Vaani home">
+          <span class="brand-mark" aria-hidden="true">V</span>
+          <span>
+            <span class="brand-name">Vaani</span>
+            <span class="brand-caption">Voice sales assistant</span>
+          </span>
+        </a>
+        <div class="header-meta">
+          <span class="prototype-label"><span class="status-dot"></span>Private prototype</span>
+          <span class="header-divider" aria-hidden="true"></span>
+          <span class="header-caption">Surefy conversation workspace</span>
         </div>
-        <span class="prototype-label">Prototype</span>
       </header>
       <p class="disclaimer">
-        An unofficial real-time voice demo for Surefy, created as a Sankar Group
-        internship assignment.
+        An unofficial real-time voice demo for Surefy, created as a Sankar Group internship assignment.
       </p>
-      <p id="error" class="error" hidden></p>
-      <section class="call-card">
-        <div class="call-card-header">
-          <div>
-            <p class="eyebrow">Live conversation</p>
-            <h2>Talk to Vaani</h2>
+      <p id="error" class="error" hidden role="alert"></p>
+
+      <section class="workspace-grid" aria-label="Voice calling workspace">
+        <section class="call-card">
+          <div class="call-card-header">
+            <div>
+              <p class="eyebrow">Live conversation</p>
+              <h1>Have a real conversation.</h1>
+              <p class="section-intro">Vaani is ready to listen, understand, and help you explore Surefy.</p>
+            </div>
+            <span id="status" class="status" aria-live="polite">ready</span>
           </div>
-          <span id="status" class="status">ready</span>
-        </div>
-        <div class="call-control">
-          <div class="call-orbit" aria-hidden="true">
-            <span class="signal-dot signal-dot-one"></span>
-            <span class="signal-dot signal-dot-two"></span>
+          <div class="call-control">
+            <div class="orbit orbit-outer" aria-hidden="true"></div>
+            <div class="orbit orbit-inner" aria-hidden="true"></div>
+            <div class="voice-visualizer" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="call-avatar" aria-hidden="true">
+              <span>V</span>
+              <small>AI</small>
+            </div>
+            <div class="call-actions">
+              <button id="start" class="call-button call-button-start" type="button">
+                <span class="call-button-icon" aria-hidden="true">●</span>
+                <span>Start call</span>
+              </button>
+              <button id="end" class="call-button call-button-end" type="button" disabled>
+                <span class="call-button-icon" aria-hidden="true">■</span>
+                <span>End call</span>
+              </button>
+            </div>
+            <div class="call-metrics" aria-label="Call metrics">
+              <span class="metric"><i class="metric-icon mic-icon"></i><span>Microphone ready</span></span>
+              <span class="metric"><i class="metric-icon signal-icon"></i><span>Live audio</span></span>
+              <span class="duration"><span id="duration">00:00</span></span>
+            </div>
           </div>
-          <button id="start" class="call-button call-button-start" type="button">
-            <span class="call-button-icon" aria-hidden="true">●</span>
-            <span>Start call</span>
-          </button>
-          <button id="end" class="call-button call-button-end" type="button" disabled>
-            <span class="call-button-icon" aria-hidden="true">■</span>
-            <span>End call</span>
-          </button>
-          <div class="call-metrics">
-            <span class="audio-indicator"><i></i> Listening</span>
-            <span class="audio-indicator speaking"><i></i> Speaking</span>
-            <span class="duration"><span id="duration">00:00</span></span>
+          <div class="privacy-note">
+            <span class="privacy-icon" aria-hidden="true">✓</span>
+            <div>
+              <strong>Your conversation stays private</strong>
+              <p>Voice is streamed securely to Gemini for this call. Nothing is recorded unless you give consent below.</p>
+            </div>
           </div>
-        </div>
-        <div class="notice">
-          <p>Your voice is streamed to Google's Gemini API so the assistant can reply.</p>
-          <p>A text transcript of every call is saved to this prototype's call history.</p>
-          <p>Audio is recorded and stored privately only if you tick the box below.</p>
-        </div>
-        <label class="consent">
-          <input id="recording-consent" type="checkbox" />
-          <span>I consent to recording this call and storing it privately for this prototype.</span>
-        </label>
+          <label class="consent">
+            <input id="recording-consent" type="checkbox" />
+            <span>I consent to recording this call and storing it privately for this prototype.</span>
+          </label>
+        </section>
+
+        <section class="conversation-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Activity stream</p>
+              <h2>Conversation</h2>
+            </div>
+            <span class="live-label"><i></i> Live transcript</span>
+          </div>
+          <div id="transcript" class="transcript" aria-live="polite">
+            <div class="transcript-welcome">
+              <span class="welcome-icon" aria-hidden="true">✦</span>
+              <strong>Your conversation will appear here</strong>
+              <p>Start a call and say hello to Vaani to begin.</p>
+            </div>
+          </div>
+          <p class="transcript-note"><span class="note-dot"></span> Transcript is generated in real time and may contain errors.</p>
+        </section>
       </section>
-      <section class="conversation-panel">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Conversation</p>
-            <h2>Call transcript</h2>
-          </div>
-          <span class="live-label"><i></i> Live</span>
-        </div>
-        <div id="transcript" class="transcript" aria-live="polite">
-          <p class="transcript-empty">Press Start Call and say hello to Vaani</p>
-        </div>
-        <p class="transcript-note">Transcript is auto-generated and may contain errors.</p>
-      </section>
+
       <section id="result" class="result" hidden aria-live="polite"></section>
+
       <section class="history-section" aria-labelledby="history-heading">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Your activity</p>
-            <h2 id="history-heading">Call history</h2>
+            <p class="eyebrow">Workspace memory</p>
+            <h2 id="history-heading">Recent calls</h2>
           </div>
           <button id="refresh-history" class="secondary-button" type="button">
-            Refresh
+            <span aria-hidden="true">↻</span> Refresh
           </button>
         </div>
         <p id="history-status" class="history-status" aria-live="polite">Loading history...</p>
@@ -93,6 +120,9 @@
         <div id="history-list" class="history-list"></div>
         <article id="history-detail" class="history-detail" hidden aria-live="polite"></article>
       </section>
+      <footer class="app-footer">
+        <span>Vaani</span><span class="footer-separator">•</span><span>Unofficial prototype for a Sankar Group assignment</span>
+      </footer>
     </main>
     <script src="/static/app.js"></script>
   </body>
