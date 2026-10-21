@@ -7,37 +7,73 @@
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <main>
-      <h1>Vaani</h1>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-mark" aria-hidden="true">V</div>
+        <div>
+          <p class="eyebrow">Voice sales assistant</p>
+          <h1>Vaani</h1>
+        </div>
+        <span class="prototype-label">Prototype</span>
+      </header>
       <p class="disclaimer">
-        Unofficial prototype: real-time AI voice sales assistant for Surefy
-        (Sankar Group intern assignment). Not an official Surefy product.
+        An unofficial real-time voice demo for Surefy, created as a Sankar Group
+        internship assignment.
       </p>
-      <p id="status" class="status">ready</p>
-      <p class="duration">Duration: <span id="duration">00:00</span></p>
       <p id="error" class="error" hidden></p>
-      <div class="notice">
-        <p>Your voice is streamed to Google's Gemini API so the assistant can reply.</p>
-        <p>A text transcript of every call is saved to this prototype's call history.</p>
-        <p>Audio is recorded and stored privately only if you tick the box below.</p>
-      </div>
-      <label class="consent">
-        <input id="recording-consent" type="checkbox" />
-        I consent to recording this call (both sides) and storing it privately for this prototype.
-      </label>
-      <section>
-        <h2>Conversation</h2>
+      <section class="call-card">
+        <div class="call-card-header">
+          <div>
+            <p class="eyebrow">Live conversation</p>
+            <h2>Talk to Vaani</h2>
+          </div>
+          <span id="status" class="status">ready</span>
+        </div>
+        <div class="call-control">
+          <div class="call-orbit" aria-hidden="true">
+            <span class="signal-dot signal-dot-one"></span>
+            <span class="signal-dot signal-dot-two"></span>
+          </div>
+          <button id="start" class="call-button call-button-start" type="button">
+            <span class="call-button-icon" aria-hidden="true">●</span>
+            <span>Start call</span>
+          </button>
+          <button id="end" class="call-button call-button-end" type="button" disabled>
+            <span class="call-button-icon" aria-hidden="true">■</span>
+            <span>End call</span>
+          </button>
+          <div class="call-metrics">
+            <span class="audio-indicator"><i></i> Listening</span>
+            <span class="audio-indicator speaking"><i></i> Speaking</span>
+            <span class="duration"><span id="duration">00:00</span></span>
+          </div>
+        </div>
+        <div class="notice">
+          <p>Your voice is streamed to Google's Gemini API so the assistant can reply.</p>
+          <p>A text transcript of every call is saved to this prototype's call history.</p>
+          <p>Audio is recorded and stored privately only if you tick the box below.</p>
+        </div>
+        <label class="consent">
+          <input id="recording-consent" type="checkbox" />
+          <span>I consent to recording this call and storing it privately for this prototype.</span>
+        </label>
+      </section>
+      <section class="conversation-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Conversation</p>
+            <h2>Call transcript</h2>
+          </div>
+          <span class="live-label"><i></i> Live</span>
+        </div>
         <div id="transcript" class="transcript" aria-live="polite">
           <p class="transcript-empty">Transcript will appear here when available.</p>
         </div>
         <p class="transcript-note">Transcript is auto-generated and may contain errors.</p>
       </section>
-      <div class="actions">
-        <button id="start" type="button">Start Call</button>
-        <button id="end" type="button" disabled>End Call</button>
-      </div>
       <section id="result" class="result" hidden aria-live="polite"></section>
       <section id="follow-up" class="lead-form" hidden>
+        <p class="eyebrow">Next step</p>
         <h2>Follow-up details</h2>
         <p>Optional details saved with this prototype call record. They are not sent to Surefy.</p>
         <form id="lead-form">
@@ -51,7 +87,10 @@
       </section>
       <section class="history-section" aria-labelledby="history-heading">
         <div class="section-heading">
-          <h2 id="history-heading">Call history</h2>
+          <div>
+            <p class="eyebrow">Your activity</p>
+            <h2 id="history-heading">Call history</h2>
+          </div>
           <button id="refresh-history" class="secondary-button" type="button">
             Refresh
           </button>
