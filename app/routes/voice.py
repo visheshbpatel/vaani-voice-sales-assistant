@@ -116,12 +116,11 @@ async def voice_socket(websocket: WebSocket) -> None:
         for value in settings.ALLOWED_ORIGINS.split(",")
         if value.strip()
     }
-    if (
-        origin
-        and host
-        and urlsplit(origin).netloc != host
-        and origin not in allowed_origins
-    ):
+    local_development = settings.DATABASE_URL.startswith("sqlite:")
+    origin_is_allowed = origin and host and (
+        urlsplit(origin).netloc == host or origin in allowed_origins
+    )
+    if (not origin and not local_development) or (origin and not origin_is_allowed):
         await websocket.close(code=1008)
         return
     await websocket.accept()

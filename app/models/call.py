@@ -47,6 +47,7 @@ class Call(Base):
     next_steps: Mapped[str | None] = mapped_column(Text)
     recording_object_key: Mapped[str | None] = mapped_column(String(512))
     recording_content_type: Mapped[str | None] = mapped_column(String(128))
+    recording_sha256: Mapped[str | None] = mapped_column(String(64))
     recording_consent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     summary_generation_status: Mapped[SummaryGenerationStatus] = mapped_column(
         Enum(

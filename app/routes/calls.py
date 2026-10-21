@@ -1,4 +1,7 @@
+import asyncio
+import hashlib
 import logging
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,10 +21,56 @@ from app.services.call_summary import (
     generate_summary,
     summary_json,
 )
-from app.services.recording_storage import save_recording, signed_recording_url
+from app.services.recording_storage import (
+    delete_recording,
+    save_recording,
+    signed_recording_url,
+)
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 logger = logging.getLogger(__name__)
+_summary_locks: dict[int, threading.Lock] = {}
+_summary_locks_guard = threading.Lock()
+_recording_locks: dict[int, threading.Lock] = {}
+_recording_locks_guard = threading.Lock()
+
+
+class SummaryGenerationInProgress(RuntimeError):
+    pass
+
+
+def _summary_lock(call_id: int) -> threading.Lock:
+    with _summary_locks_guard:
+        return _summary_locks.setdefault(call_id, threading.Lock())
+
+
+def _recording_lock(call_id: int) -> threading.Lock:
+    with _recording_locks_guard:
+        return _recording_locks.setdefault(call_id, threading.Lock())
+
+
+async def _read_recording(request: Request) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid recording length.") from exc
+        if declared_length < 0:
+            raise HTTPException(status_code=400, detail="Invalid recording length.")
+        if declared_length > settings.RECORDING_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > settings.RECORDING_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if not content:
+        raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+    return content
 
 @router.get("", response_model=list[CallListItem])
 def list_calls(
@@ -57,32 +106,42 @@ def get_call(
     return call
 
 
-def generate_call_summary(db: Session, call: Call) -> Call:
+def generate_call_summary(db: Session, call: Call, *, wait: bool = True) -> Call:
+    lock = _summary_lock(call.id)
+    if not lock.acquire(blocking=wait):
+        raise SummaryGenerationInProgress
     try:
-        summary = generate_summary(call.transcript)
-    except SummaryGenerationError:
-        call.summary_generation_status = SummaryGenerationStatus.FAILED
-        call.status = None
-        call.summary = None
-    else:
-        call.summary = summary_json(summary)
-        call.status = summary.status
-        call.customer_requirements = "\n".join(summary.needs) or None
-        call.objections = "\n".join(summary.objections) or None
-        call.next_steps = "\n".join(summary.next_steps) or None
-        for field in (
-            "lead_name",
-            "lead_company",
-            "lead_contact",
-            "lead_preferred_time",
-        ):
-            value = getattr(summary, field).strip()
-            if value and not getattr(call, field):
-                setattr(call, field, value)
-        call.summary_generation_status = SummaryGenerationStatus.COMPLETED
-    db.commit()
-    db.refresh(call)
-    return call
+        if call.ended_at is None:
+            raise SummaryGenerationError("Call has not ended.")
+        call.summary_generation_status = SummaryGenerationStatus.PENDING
+        db.commit()
+        try:
+            summary = generate_summary(call.transcript)
+        except SummaryGenerationError:
+            call.summary_generation_status = SummaryGenerationStatus.FAILED
+            call.status = None
+            call.summary = None
+        else:
+            call.summary = summary_json(summary)
+            call.status = summary.status
+            call.customer_requirements = "\n".join(summary.needs) or None
+            call.objections = "\n".join(summary.objections) or None
+            call.next_steps = "\n".join(summary.next_steps) or None
+            for field in (
+                "lead_name",
+                "lead_company",
+                "lead_contact",
+                "lead_preferred_time",
+            ):
+                value = getattr(summary, field).strip()
+                if value and not getattr(call, field):
+                    setattr(call, field, value)
+            call.summary_generation_status = SummaryGenerationStatus.COMPLETED
+        db.commit()
+        db.refresh(call)
+        return call
+    finally:
+        lock.release()
 
 
 @router.post("/{call_id}/summary/retry", response_model=CallHistory)
@@ -103,7 +162,12 @@ def retry_summary(
     if call.summary_generation_status == SummaryGenerationStatus.COMPLETED:
         return call
     try:
-        return generate_call_summary(db, call)
+        return generate_call_summary(db, call, wait=False)
+    except SummaryGenerationInProgress:
+        raise HTTPException(
+            status_code=409,
+            detail="Summary generation is already in progress.",
+        )
     except SQLAlchemyError:
         db.rollback()
         logger.exception("Could not save regenerated call summary.")
@@ -119,46 +183,39 @@ async def upload_recording(call_id: int, request: Request, db: Session = Depends
             raise HTTPException(status_code=401, detail="missing call token")
         if not valid_call_token(call_id, call_token):
             raise HTTPException(status_code=401, detail="invalid call token")
-    call = db.get(Call, call_id)
-    if call is None:
-        raise HTTPException(status_code=404, detail="Call record not found.")
-    if not call.recording_consent:
-        raise HTTPException(status_code=400, detail="Recording consent was not provided.")
-    if call.recording_object_key:
-        raise HTTPException(status_code=409, detail="A recording already exists for this call.")
-    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if content_type not in {"audio/webm", "audio/ogg"}:
-        raise HTTPException(status_code=415, detail="Unsupported recording format.")
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            declared_length = int(content_length)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid recording length.")
-        if declared_length < 0:
-            raise HTTPException(status_code=400, detail="Invalid recording length.")
-        if declared_length > settings.RECORDING_MAX_BYTES:
-            raise HTTPException(status_code=413, detail="Recording is empty or too large.")
-    chunks: list[bytes] = []
-    size = 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > settings.RECORDING_MAX_BYTES:
-            raise HTTPException(status_code=413, detail="Recording is empty or too large.")
-        chunks.append(chunk)
-    content = b"".join(chunks)
-    if not content:
-        raise HTTPException(status_code=413, detail="Recording is empty or too large.")
+    recording_lock = _recording_lock(call_id)
+    await asyncio.to_thread(recording_lock.acquire)
     try:
-        object_key = await save_recording(call_id, content, content_type)
-        call.recording_object_key = object_key
-        call.recording_content_type = content_type
-        db.commit()
-    except (SQLAlchemyError, RuntimeError):
-        db.rollback()
-        logger.exception("Could not save call recording.")
-        raise HTTPException(status_code=503, detail="Recording could not be saved.")
-    return {"saved": True, "content_type": content_type}
+        call = db.get(Call, call_id)
+        if call is None:
+            raise HTTPException(status_code=404, detail="Call record not found.")
+        if not call.recording_consent:
+            raise HTTPException(status_code=400, detail="Recording consent was not provided.")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type not in {"audio/webm", "audio/ogg"}:
+            raise HTTPException(status_code=415, detail="Unsupported recording format.")
+        content = await _read_recording(request)
+        content_hash = hashlib.sha256(content).hexdigest()
+        if call.recording_object_key:
+            if call.recording_sha256 == content_hash:
+                return {"saved": True, "content_type": call.recording_content_type}
+            raise HTTPException(status_code=409, detail="A recording already exists for this call.")
+        object_key = None
+        try:
+            object_key = await save_recording(call_id, content, content_type)
+            call.recording_object_key = object_key
+            call.recording_content_type = content_type
+            call.recording_sha256 = content_hash
+            db.commit()
+        except (SQLAlchemyError, RuntimeError):
+            db.rollback()
+            if object_key:
+                await delete_recording(object_key)
+            logger.exception("Could not save call recording.")
+            raise HTTPException(status_code=503, detail="Recording could not be saved.")
+        return {"saved": True, "content_type": content_type}
+    finally:
+        recording_lock.release()
 
 
 @router.get("/local/{object_key:path}")

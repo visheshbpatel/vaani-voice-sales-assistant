@@ -68,11 +68,18 @@ def require_history_access(
     list_access: bool = False,
     require_credentials: bool = False,
 ) -> None:
-    if (
-        not settings.HISTORY_PASSWORD
+    local_development = (
+        settings.DATABASE_URL.startswith("sqlite:")
         and settings.ALLOW_LOCAL_RECORDINGS
-        and not require_credentials
-    ):
+    )
+    if not settings.HISTORY_PASSWORD and not local_development:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail="History protection is not configured on this server.",
+        )
+    if not settings.HISTORY_PASSWORD and local_development and not require_credentials:
         return
     if valid_password(password) or (
         not list_access and call_id is not None and valid_call_token(call_id, token)

@@ -178,8 +178,31 @@ def test_recording_upload_normalizes_type_rejects_duplicate_and_size(
     assert invalid_length.status_code == 400
     assert response.status_code == 200
     assert response.json()["content_type"] == "audio/webm"
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 200
     assert oversized.status_code == 413
+
+
+def test_recording_upload_rejects_different_duplicate(db_session, monkeypatch):
+    call = create_call(db_session)
+    call.recording_consent = True
+    db_session.commit()
+
+    async def save_recording(*args):
+        return "call-1/audio.webm"
+
+    monkeypatch.setattr("app.routes.calls.save_recording", save_recording)
+    headers = {
+        "Content-Type": "audio/webm",
+        "X-Call-Token": make_call_token(call.id),
+    }
+    with TestClient(app) as client:
+        assert client.put(
+            f"/api/calls/{call.id}/recording", content=b"one", headers=headers
+        ).status_code == 200
+        response = client.put(
+            f"/api/calls/{call.id}/recording", content=b"two", headers=headers
+        )
+    assert response.status_code == 409
 
 
 def test_recording_upload_accepts_call_token_and_rejects_wrong_token(

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.main import app
 from app.models.call import CallStatus, SummaryGenerationStatus
+from app.routes import calls as calls_route
 from app.routes.calls import create_call, finalize_call, generate_call_summary
 from app.security import make_call_token
 from app.services import call_summary
@@ -179,6 +180,7 @@ def test_generation_failure_marks_record_failed(db_session, monkeypatch):
     call = create_call(db_session)
     call.transcript = [{"speaker": "customer", "text": "Hello"}]
     db_session.commit()
+    finalize_call(db_session, call.id, call.transcript)
     monkeypatch.setattr(
         "app.routes.calls.generate_summary",
         lambda transcript: (_ for _ in ()).throw(
@@ -190,6 +192,18 @@ def test_generation_failure_marks_record_failed(db_session, monkeypatch):
 
     assert call.summary_generation_status is SummaryGenerationStatus.FAILED
     assert call.status is None
+
+
+def test_summary_retry_does_not_start_parallel_generation(db_session):
+    call = create_call(db_session)
+    finalize_call(db_session, call.id, [{"speaker": "customer", "text": "Hello"}])
+    lock = calls_route._summary_lock(call.id)
+    assert lock.acquire()
+    try:
+        with pytest.raises(calls_route.SummaryGenerationInProgress):
+            generate_call_summary(db_session, call, wait=False)
+    finally:
+        lock.release()
 
 
 def test_retry_updates_same_record(db_session, monkeypatch):
@@ -218,6 +232,7 @@ def test_summary_prefills_empty_lead_columns_without_consent(db_session, monkeyp
     call = create_call(db_session)
     call.transcript = [{"speaker": "customer", "text": "My name is Ada"}]
     db_session.commit()
+    finalize_call(db_session, call.id, call.transcript)
     summary_data = {
         **_valid_summary(),
         "lead_name": "Ada",

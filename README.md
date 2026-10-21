@@ -73,6 +73,13 @@ Add variables marked `sync: false` in the Render dashboard and use PostgreSQL.
 | `STORAGE_BUCKET_NAME` | Storage bucket name. |
 | `RECORDING_MAX_BYTES` | Maximum recording upload size. |
 
+For Render/PostgreSQL deployments, `HISTORY_PASSWORD` is required. If it is
+missing, protected history endpoints fail closed with a configuration error.
+Local SQLite development may omit it and uses the local-development exception.
+The PostgreSQL RLS migration enables the database feature but does not provide
+per-user isolation: Vaani has no user ownership model, so application-level
+call tokens and the history password remain the authorization controls.
+
 ## Limitations
 
 Free hosting and database tiers sleep when idle, so the first request may be

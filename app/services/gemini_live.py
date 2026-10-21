@@ -98,7 +98,6 @@ async def _browser_to_gemini(
             if timing["first_mic_received_at"] is None:
                 timing["first_mic_received_at"] = now
                 logger.info("voice first_mic_chunk")
-            caller_spoke.set()
             await session.send_realtime_input(
                 audio=types.Blob(data=chunk, mime_type=INPUT_MIME)
             )
@@ -123,6 +122,10 @@ async def _gemini_to_browser(
     nudge_task = None
     nudge_state = {"count": 0}
     nudging_disabled = False
+
+    def is_nudging_disabled() -> bool:
+        return nudging_disabled
+
     try:
         while True:
             async for response in session.receive():
@@ -152,10 +155,13 @@ async def _gemini_to_browser(
                         nudge_task.cancel()
                         await asyncio.gather(nudge_task, return_exceptions=True)
                     continue
-                if getattr(content, "turn_complete", None) is True:
-                    if nudge_task and not nudge_task.done():
-                        nudge_task.cancel()
-                        await asyncio.gather(nudge_task, return_exceptions=True)
+                if (
+                    getattr(content, "turn_complete", None) is True
+                    and nudge_task
+                    and not nudge_task.done()
+                ):
+                    nudge_task.cancel()
+                    await asyncio.gather(nudge_task, return_exceptions=True)
                 for transcription, speaker in (
                     (getattr(content, "input_transcription", None), "customer"),
                     (getattr(content, "output_transcription", None), "assistant"),
@@ -239,7 +245,7 @@ async def _gemini_to_browser(
                                 playback_idle,
                                 caller_spoke,
                                 nudge_state,
-                                lambda: nudging_disabled,
+                                is_nudging_disabled,
                             )
                         )
     except WebSocketDisconnect:

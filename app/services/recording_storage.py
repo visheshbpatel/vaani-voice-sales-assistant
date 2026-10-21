@@ -87,3 +87,23 @@ async def signed_recording_url(object_key: str) -> str:
     except (BotoCoreError, ClientError):
         logger.exception("Storage recording URL generation failed.")
         raise RuntimeError("Recording playback is unavailable.")
+
+
+async def delete_recording(object_key: str) -> None:
+    if configured():
+        try:
+            await asyncio.to_thread(
+                _client().delete_object,
+                Bucket=settings.STORAGE_BUCKET_NAME,
+                Key=object_key,
+            )
+        except (BotoCoreError, ClientError):
+            logger.exception("Storage recording cleanup failed.")
+        return
+    path = (LOCAL_RECORDINGS / object_key).resolve()
+    root = LOCAL_RECORDINGS.resolve()
+    if root in path.parents and path.is_file():
+        try:
+            path.unlink()
+        except OSError:
+            logger.exception("Local recording cleanup failed.")

@@ -43,6 +43,8 @@ let recordingCallToken = null;
 let callToken = null;
 let finishTimer = null;
 let summaryPollTimer = null;
+let summaryPollGeneration = 0;
+let historySelectionGeneration = 0;
 let callGeneration = 0;
 let historyCalls = [];
 let selectedHistoryId = null;
@@ -202,13 +204,17 @@ function bindRetryButtons(container) {
 }
 
 async function selectHistoryCall(callId) {
+  selectedHistoryId = callId;
+  const selectionGeneration = ++historySelectionGeneration;
   try {
     const call = await requestJson(
       `/api/calls/${callId}`,
       { headers: apiHeaders() },
       "Could not load this call.",
     );
-    await renderHistoryDetail(call);
+    if (selectionGeneration === historySelectionGeneration) {
+      await renderHistoryDetail(call, selectionGeneration);
+    }
   } catch (error) {
     if (error.status === 401) {
       clearHistoryPassword();
@@ -226,6 +232,14 @@ function clearHistoryPassword() {
     // Storage may be unavailable.
   }
   historyUnlockEl.hidden = false;
+}
+
+function cancelSummaryPolling() {
+  summaryPollGeneration += 1;
+  if (summaryPollTimer) {
+    clearTimeout(summaryPollTimer);
+    summaryPollTimer = null;
+  }
 }
 
 async function retrySummary(callId, button) {
@@ -284,6 +298,13 @@ function renderResult(call) {
 }
 
 async function pollSummary(callId) {
+  const pollGeneration = ++summaryPollGeneration;
+  if (summaryPollTimer) {
+    clearTimeout(summaryPollTimer);
+    summaryPollTimer = null;
+  }
+  const isCurrentPoll = () =>
+    pollGeneration === summaryPollGeneration && String(currentCallId) === String(callId);
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
       const call = await requestJson(
@@ -291,9 +312,11 @@ async function pollSummary(callId) {
         { headers: apiHeaders() },
         "Could not load the call result.",
       );
+      if (!isCurrentPoll()) return;
       renderResult(call);
       if (call.summary_generation_status !== "pending") return;
     } catch (error) {
+      if (!isCurrentPoll()) return;
       resultEl.hidden = false;
       resultEl.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
       setError(error.message);
@@ -302,21 +325,37 @@ async function pollSummary(callId) {
     await new Promise((resolve) => {
       summaryPollTimer = setTimeout(resolve, 2000);
     });
+    summaryPollTimer = null;
   }
+  if (!isCurrentPoll()) return;
   try {
-    renderResult(await requestJson(
+    const call = await requestJson(
       `/api/calls/${callId}`,
       { headers: apiHeaders() },
       "Could not load the call result.",
-    ));
+    );
+    if (isCurrentPoll()) {
+      if (call.summary_generation_status === "pending") {
+        resultEl.hidden = false;
+        resultEl.innerHTML = `
+          <h2>Call result</h2>
+          <p>Summary processing is taking longer than expected.</p>
+          ${retryButton(call.id)}
+        `;
+        bindRetryButtons(resultEl);
+      } else {
+        renderResult(call);
+      }
+    }
   } catch (error) {
+    if (!isCurrentPoll()) return;
     resultEl.hidden = false;
     resultEl.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
     setError(error.message);
   }
 }
 
-async function renderHistoryDetail(call) {
+async function renderHistoryDetail(call, selectionGeneration = historySelectionGeneration) {
   selectedHistoryId = call.id;
   historyDetailEl.hidden = false;
   historyDetailEl.innerHTML = `
@@ -345,6 +384,7 @@ async function renderHistoryDetail(call) {
       { headers: apiHeaders() },
       "Recording unavailable or playback failed.",
     );
+    if (selectionGeneration !== historySelectionGeneration) return;
     const player = document.createElement("audio");
     player.className = "history-recording";
     player.controls = true;
@@ -618,6 +658,7 @@ function cleanup(closeSocket = true) {
   }
   recordingDestination = null;
   recorder = null;
+  recordingConsent.disabled = false;
 }
 
 function finishCall(generation = callGeneration) {
@@ -735,15 +776,13 @@ async function startCall() {
     return;
   }
   callPhase = "active";
+  recordingConsent.disabled = true;
   callGeneration += 1;
   setError("");
   setStatus("connecting");
   setDuration(0);
   clearTranscript();
-  if (summaryPollTimer) {
-    clearTimeout(summaryPollTimer);
-    summaryPollTimer = null;
-  }
+  cancelSummaryPolling();
   currentCallId = null;
   callToken = null;
   recordingCallId = null;
@@ -832,6 +871,7 @@ async function startCall() {
 }
 
 async function uploadRecording() {
+  if (recordingUploadPromise) return recordingUploadPromise;
   if (!recordingChunks.length) return;
   const uploadCallId = recordingCallId;
   const uploadCallToken = recordingCallToken;

@@ -24,4 +24,4 @@ def test_history_requires_password_when_local_mode_is_disabled(monkeypatch):
     with pytest.raises(Exception) as error:
         security.require_history_access(None, None, None, list_access=True)
 
-    assert error.value.status_code == 401
+    assert error.value.status_code == 503
