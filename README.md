@@ -2,6 +2,12 @@
 
 Vaani is an unofficial Sankar Group internship prototype where a prospect has a spoken conversation with an AI sales assistant for Surefy. It is not an official Surefy product and does not integrate with Surefy systems.
 
+
+## Live Demo
+
+- **Application:** https://vaani-voice-sales-assistant.onrender.com/
+
+
 ## Features
 
 - **Real-time voice conversation:** Microphone input and spoken responses from Gemini Live.
